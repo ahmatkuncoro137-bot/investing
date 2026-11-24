@@ -1,0 +1,120 @@
+{
+  "range": "5y",
+  "interval": "1d",
+  "aturan": {
+    "A_vol_spike": "Volume ≥ 1,8× rata-rata 20 hari, nilai transaksi 20 hari ≥ Rp2 miliar",
+    "B_breakout_vol": "Tutup ≥ highest 20 hari + volume ≥ 1,5× + nilai 20 hari ≥ Rp2 miliar",
+    "C_screener": "Sinyal 'potensi naik kuat' di app: volume ≥ 1,8× dan (breakout 20 hari atau tutup dekat high + naik ≥ 3%), likuid Rp2 miliar",
+    "D_beli_aturan": "Sinyal BELI (breakout bervolume atau retest support di tren naik)",
+    "E_ikut_bandar": "Ikut Bandar (volume-based): likuid Rp2 miliar, volume ≥ 1,8×, harga naik, tutup dekat high, OBV atau A/D 5 hari naik, breakout highest 20 hari. Bukan broker summary/foreign flow."
+  },
+  "catatan_next_day": "Return diukur tutup hari sinyal → tutup hari bursa berikutnya. Bukan jaminan hasil ke depan.",
+  "catatan_trade_beli": "Simulasi sinyal BELI: masuk di open hari berikutnya, keluar di SL / TP1 (1,5R) / sinyal JUAL / maksimal 20 hari. Kalau SL dan TP1 tersentuh di hari yang sama, dihitung kalah di SL (konservatif).",
+  "next_day": {
+    "A_vol_spike": {
+      "definisi": "Volume ≥ 1,8× rata-rata 20 hari, nilai transaksi 20 hari ≥ Rp2 miliar",
+      "n": 37905,
+      "n_ge_10": 1660,
+      "n_ge_5": 4052,
+      "n_ge_0": 18046,
+      "n_le_m5": 5479,
+      "pct_ge_10": 4.38,
+      "pct_ge_5": 10.69,
+      "pct_ge_0": 47.61,
+      "pct_le_m5": 14.45,
+      "median_pct": -0.49,
+      "avg_pct": -0.24
+    },
+    "B_breakout_vol": {
+      "definisi": "Tutup ≥ highest 20 hari + volume ≥ 1,5× + nilai 20 hari ≥ Rp2 miliar",
+      "n": 10391,
+      "n_ge_10": 661,
+      "n_ge_5": 1416,
+      "n_ge_0": 4896,
+      "n_le_m5": 1531,
+      "pct_ge_10": 6.36,
+      "pct_ge_5": 13.63,
+      "pct_ge_0": 47.12,
+      "pct_le_m5": 14.73,
+      "median_pct": -0.51,
+      "avg_pct": 0.16
+    },
+    "C_screener": {
+      "definisi": "Sinyal 'potensi naik kuat' di app: volume ≥ 1,8× dan (breakout 20 hari atau tutup dekat high + naik ≥ 3%), likuid Rp2 miliar",
+      "n": 12464,
+      "n_ge_10": 869,
+      "n_ge_5": 1818,
+      "n_ge_0": 5664,
+      "n_le_m5": 2130,
+      "pct_ge_10": 6.97,
+      "pct_ge_5": 14.59,
+      "pct_ge_0": 45.44,
+      "pct_le_m5": 17.09,
+      "median_pct": -0.69,
+      "avg_pct": 0.07
+    },
+    "D_beli_aturan": {
+      "definisi": "Sinyal BELI (breakout bervolume atau retest support di tren naik)",
+      "n": 45024,
+      "n_ge_10": 2439,
+      "n_ge_5": 6779,
+      "n_ge_0": 26359,
+      "n_le_m5": 5404,
+      "pct_ge_10": 5.42,
+      "pct_ge_5": 15.06,
+      "pct_ge_0": 58.54,
+      "pct_le_m5": 12.0,
+      "median_pct": 0.0,
+      "avg_pct": 0.48
+    },
+    "E_ikut_bandar": {
+      "definisi": "Ikut Bandar (volume-based): likuid Rp2 miliar, volume ≥ 1,8×, harga naik, tutup dekat high, OBV atau A/D 5 hari naik, breakout highest 20 hari. Bukan broker summary/foreign flow.",
+      "n": 4833,
+      "n_ge_10": 420,
+      "n_ge_5": 809,
+      "n_ge_0": 2281,
+      "n_le_m5": 804,
+      "pct_ge_10": 8.69,
+      "pct_ge_5": 16.74,
+      "pct_ge_0": 47.2,
+      "pct_le_m5": 16.64,
+      "median_pct": -0.52,
+      "avg_pct": 0.42
+    }
+  },
+  "day5": {
+    "E_ikut_bandar": {
+      "definisi": "Return tutup hari sinyal Ikut Bandar → tutup 5 hari bursa kemudian.",
+      "n": 4829,
+      "n_ge_10": 846,
+      "n_ge_5": 1288,
+      "n_ge_0": 2267,
+      "n_le_m5": 1469,
+      "pct_ge_10": 17.52,
+      "pct_ge_5": 26.67,
+      "pct_ge_0": 46.95,
+      "pct_le_m5": 30.42,
+      "median_pct": -0.84,
+      "avg_pct": 1.07
+    }
+  },
+  "trade_beli": {
+    "n": 45024,
+    "n_ge_10": 7379,
+    "n_ge_5": 14324,
+    "n_ge_0": 21917,
+    "n_le_m5": 15248,
+    "pct_ge_10": 16.39,
+    "pct_ge_5": 31.81,
+    "pct_ge_0": 48.68,
+    "pct_le_m5": 33.87,
+    "median_pct": -0.96,
+    "avg_pct": -0.25,
+    "win_rate": 37.67,
+    "n_trades": 45024,
+    "n_win": 16961,
+    "n_lose": 28063
+  },
+  "min_value_likuid": 2000000000,
+  "catatan_ikut_bandar": "Sinyal 'Ikut Bandar' TIDAK memakai broker summary atau foreign flow (data itu tidak tersedia di sumber gratis app ini). Ini inferensi dari volume, nilai transaksi, OBV, Accumulation/Distribution, dan breakout harga. Bukan jejak sekuritas tertentu."
+}
