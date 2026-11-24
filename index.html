@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#070b16" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Investing" />
+  <meta name="description" content="Investing — belajar saham BEI, screener, sinyal, dividen, dan berita. Bukan saran beli/jual." />
+  <title>Investing</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+</head>
+<body>
+  <div id="auth-root" class="auth-screen" hidden></div>
+  <div class="wrap" id="shell" hidden>
+    <header class="topbar">
+      <div class="topbar-row">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand">
+          <h1>Investing</h1>
+          <p>Belajar · pantau · dividen BEI</p>
+        </div>
+        <div class="top-actions">
+          <button type="button" class="icon-btn" id="btn-watch" aria-label="Watchlist">★ <span id="watch-count">0</span></button>
+          <button type="button" class="icon-btn" id="btn-logout" aria-label="Keluar">Keluar</button>
+        </div>
+      </div>
+      <div class="stamp" id="stamp">Lagi muat data Yahoo &amp; berita…</div>
+    </header>
+    <nav class="nav" id="nav" aria-label="Menu utama"></nav>
+    <main id="app">
+      <p class="hint">Lagi muat data… Kalau lama, cek file di folder data/ sudah ada belum.</p>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden" role="status">
+    <span>Versi baru tersedia</span>
+    <button type="button" id="btn-reload">Muat ulang</button>
+  </div>
+  <script src="lessons.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
