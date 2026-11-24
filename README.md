@@ -46,6 +46,15 @@ python3 fetch_market.py --mode full --market us --out /tmp/x   # tulis ke folder
 
 File: `data/market.json` (BEI), `market_us.json`, `market_jp.json`, `backtest*.json`, `news.json`, `quotes.json`. Daftar saham: `data/universe.csv`, `universe_us.csv` (Wikipedia S&P 500 + Nasdaq.com Nasdaq-100, Nov 2026), `universe_jp.csv` (indexes.nikkei.co.jp, Nov 2026) — perbarui berkala.
 
+## Jadwal dividen (tab Dividen & detail saham)
+
+`dividends.py` (dipanggil `fetch_market.py --mode full`): per saham → **beli paling lambat (cum)**, ex, recording, **tanggal cair**, DPS, yield, hitung mundur, bulan biasanya cair, simulasi modal → lot → dividen bersih.
+
+- **BEI resmi:** KSEI `api/corporate_actions` (recording, pembayaran, DPS) + PDF pengumuman KSEI untuk cum/ex pasar reguler. Kalau PDF gagal: cum = recording − 2 hari bursa (T+2), ditandai `resmi*`.
+- **AS resmi:** Nasdaq dividend calendar (ex, record, payment, DPS) — cakupan terutama saham listing Nasdaq; saham NYSE pakai perkiraan. Beli paling lambat = 1 hari bursa sebelum ex (T+1).
+- **Jepang:** belum ada sumber resmi gratis → perkiraan dari ex-date Yahoo tahun lalu; cair ±70 hari setelah recording (pola umum setelah RUPS).
+- Riwayat disimpan di `div_hist_id.json` / `div_hist_us.json` (backfill 400 hari sekali, lalu jendela −25…+100 hari tiap rebuild).
+
 Buka app (jangan `file://`): `python3 -m http.server 8765` → http://127.0.0.1:8765/
 
 ## Auth Firebase (opsional)

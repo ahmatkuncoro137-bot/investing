@@ -121,7 +121,15 @@ def iso(t: dt.datetime) -> str:
 
 
 def ymd(ts: int | float) -> str:
-    return dt.datetime.fromtimestamp(int(ts), WIB).strftime("%Y-%m-%d")
+    """Tanggal di zona waktu bursa aktif (WIB/ET/JST) — penting untuk ex-date Jepang (00:00 JST)."""
+    tz = WIB
+    try:
+        if MKT["tz"] != "Asia/Jakarta":
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(MKT["tz"])
+    except Exception:
+        pass
+    return dt.datetime.fromtimestamp(int(ts), tz).strftime("%Y-%m-%d")
 
 
 def http_get(url: str, timeout: int = 25) -> bytes:
@@ -1445,6 +1453,11 @@ def summarize_ihsg(ch: dict) -> dict:
     }
 
 
+def ZoneInfo_(name):
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(name)
+
+
 def market_is_open(mkt: dict, now_utc: dt.datetime | None = None, grace_min: int = 20) -> bool:
     """Perkiraan jam bursa (hari kerja, tanpa kalender libur). Grace setelah tutup
     supaya harga penutupan ikut terambil."""
@@ -1646,6 +1659,42 @@ def run_full(mid: str, force: bool) -> None:
         except Exception as e:
             sum_err.append({"code": u["code"], "error": str(e)})
 
+    # ---- jadwal dividen (resmi KSEI/Nasdaq kalau ada, selain itu perkiraan) ----
+    div_meta = {"source": None, "ok": 0, "fail": 0}
+    try:
+        import dividends as dv
+        today_m = dt.datetime.now(ZoneInfo_(mkt["tz"])).date()
+        holidays: set = set()
+        ich = charts.get("__INDEX__")
+        if ich and ich.get("ts"):
+            have = {dt.datetime.fromtimestamp(t, ZoneInfo_(mkt["tz"])).date() for t in ich["ts"]}
+            first = min(have)
+            holidays = {d for d in dv.weekdays(first, max(have)) if d not in have}
+        codes = {s["code"] for s in stocks}
+        hist = dv.refresh_history(mid, DATA, codes, today_m, log=lambda m: print(m, flush=True))
+        by_code: dict[str, list] = {}
+        for e in (hist.get("events") or {}).values():
+            by_code.setdefault(e["code"], []).append(e)
+        n_off = n_est = 0
+        for s in stocks:
+            ch = charts.get(s["code"]) or {}
+            sch = dv.build_schedule(mid, s["code"], ch.get("divs") or [], by_code.get(s["code"], []), s.get("price"), today_m, holidays)
+            s["div"] = sch
+            if sch["next"]:
+                if sch["next_is_official"]:
+                    n_off += 1
+                else:
+                    n_est += 1
+        div_meta = {"source": hist.get("source"), "ok": hist.get("ok"), "fail": hist.get("fail"),
+                    "history_events": len(hist.get("events") or {}), "updated_utc": hist.get("updated"),
+                    "next_official": n_off, "next_estimated": n_est,
+                    "payers_12m": sum(1 for s in stocks if (s.get("dps_ttm") or 0) > 0),
+                    "today": today_m.isoformat()}
+        print(f"[{mid}] jadwal dividen: resmi {n_off}, perkiraan {n_est}, sumber {div_meta['source']}", flush=True)
+    except Exception as e:  # jangan gagalkan rebuild karena jadwal dividen
+        div_meta["error"] = str(e)
+        print(f"[{mid}] jadwal dividen gagal: {e}", flush=True)
+
     index = None
     if "__INDEX__" in charts:
         index = summarize_ihsg(charts["__INDEX__"])
@@ -1703,6 +1752,7 @@ def run_full(mid: str, force: bool) -> None:
             "yahoo_fail": len([m for m in missing if m["code"] != idx_name]),
             "berita": news.get("count") if news else None,
         },
+        "dividend_schedule": div_meta,
         "index": index,
         "ihsg": index,
         "stocks": stocks,

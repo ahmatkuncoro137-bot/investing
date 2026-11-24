@@ -343,3 +343,34 @@ footer.disc { font-size: 11px; color: var(--faint); margin: 18px 0 8px; line-hei
 .stamp .stamp-live { display: block; width: 100%; font-size: 12.5px; color: var(--accent-2); }
 .stamp .stamp-live strong { color: #fff; }
 .stamp > .faint { display: block; width: 100%; }
+
+/* --- Dividen: jadwal, countdown, kalender, simulasi --- */
+.subh { font-size: 14px; margin: 14px 0 8px; color: var(--accent-2); }
+.mb { margin-bottom: 8px; }
+.cd { display: inline-block; font-size: 12.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-dim); }
+.cd.soon { color: #fff; background: rgba(59,130,246,.28); border-color: var(--accent); }
+.cd.now { color: #fff; background: rgba(240,113,120,.3); border-color: var(--down); }
+.cd.wait { color: var(--up); background: rgba(61,214,140,.12); border-color: rgba(61,214,140,.4); }
+.cd.past { color: var(--muted); }
+.dates4 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 8px; }
+.dates4 > div { display: grid; gap: 2px; padding: 7px 9px; border-radius: 10px; background: rgba(255,255,255,.03); border: 1px solid var(--line-dim); }
+.dates4 .lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); }
+.dates4 b { font-size: 14px; }
+.dates4 .badge { justify-self: start; font-size: 10px; padding: 1px 6px; }
+.sim { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: rgba(61,214,140,.07); border: 1px dashed rgba(61,214,140,.35); font-size: 13px; line-height: 1.45; }
+.sim .lbl { font-weight: 700; color: var(--up); }
+.sim .faint { color: var(--faint); font-size: 11px; }
+table.sched { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+table.sched td { padding: 7px 4px; border-bottom: 1px solid var(--line-dim); vertical-align: middle; }
+table.sched td:first-child { color: var(--muted); }
+table.sched td:last-child { text-align: right; }
+.month-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 10px; }
+.month-grid button { appearance: none; border: 1px solid var(--line-dim); background: rgba(10,18,34,.7); color: var(--text); border-radius: 10px; padding: 7px 2px; font: 600 13px/1.1 var(--sans); cursor: pointer; display: grid; gap: 2px; }
+.month-grid button small { color: var(--faint); font-size: 10.5px; font-weight: 500; }
+.month-grid button[aria-pressed="true"] { background: rgba(59,130,246,.3); border-color: var(--accent); }
+.modal-card .modal-in { display: grid; gap: 6px; font-weight: 600; font-size: 13px; }
+.modal-card input { font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(5,10,20,.6); color: var(--text); }
+details.explain summary { cursor: pointer; }
+details.explain ol { padding-left: 18px; margin: 8px 0; }
+details.explain li { margin-bottom: 4px; }
+.card a { color: var(--accent-2); }

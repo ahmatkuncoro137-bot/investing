@@ -88,7 +88,12 @@
     newsQuery: "",
     newsEvent: "semua",
     watchOnly: false,
-    calc: { code: "", lots: 10, price: "", dps: "", reinvest: false },
+    calc: { code: "", modal: "", price: "", dps: "", reinvest: false },
+    divModal: {},
+    divView: "terdekat",
+    divMonth: 0,
+    divShowAll: false,
+    divExplainOpen: true,
   };
 
   const $ = (sel, el = document) => el.querySelector(sel);
@@ -828,11 +833,15 @@
       </div>
 
       <div class="card">
-        <h3>Dividen (data Yahoo)</h3>
-        ${s.last_dps != null ? `<p>DPS 12 bulan terakhir <strong>${fmtNum(s.dps_ttm, 2)}</strong> · yield TTM <strong>${fmtNum(s.yield_ttm, 2)}%</strong> di harga sekarang. Ex terakhir <strong>${parseDay(s.last_ex)}</strong>${s.last_cum_perkiraan ? ` · cum perkiraan ${parseDay(s.last_cum_perkiraan)}` : ""}.</p>` : `<p class="muted">Tidak ada event dividen di chart Yahoo untuk periode yang diambil.</p>`}
-        ${s.next_div_perkiraan ? `<div class="infobox mt"><strong>Perkiraan, bukan pengumuman.</strong> Pola ex-date tahun lalu menunjuk sekitar ${parseDay(s.next_div_perkiraan.ex_perkiraan)} (DPS acuan ${fmtNum(s.next_div_perkiraan.dps_perkiraan, 2)}, dari ex ${parseDay(s.next_div_perkiraan.berdasarkan_ex)}). ${escapeHtml(s.next_div_perkiraan.catatan)}</div>` : ""}
-        ${s.divs?.length ? `<table class="prose"><thead><tr><th>Ex-date (Yahoo)</th><th>DPS</th><th>Cum (perkiraan)</th></tr></thead><tbody>${s.divs.slice().reverse().map((d) => `<tr><td>${parseDay(d.ex)}</td><td>${fmtNum(d.dps, 2)}</td><td>${d.cum_perkiraan ? parseDay(d.cum_perkiraan) : "—"}</td></tr>`).join("")}</tbody></table>` : ""}
-        <button type="button" class="icon-btn" data-calc-from="${s.code}">Hitung dividen saham ini</button>
+        <h3>Dividen — kapan beli &amp; kapan cair</h3>
+        ${s.div?.next ? `<div class="mb">${countdown(s.div.next)} ${s.div.next_is_official ? `<span class="badge beli">jadwal resmi</span>` : `<span class="badge tunggu">perkiraan</span>`}</div>${schedTable(s.div.next)}` : `<p class="muted">Belum ada jadwal dividen berikutnya (resmi maupun perkiraan).</p>`}
+        ${s.div?.next && !s.div.next_is_official ? `<p class="small muted">${escapeHtml(s.div.next.cum?.basis || "")}. Tanggal cair: ${escapeHtml(s.div.next.pay?.basis || "")}.</p>` : ""}
+        ${s.div?.next?.source_url ? `<p class="small faint">Sumber: <a href="${escapeHtml(s.div.next.source_url)}" target="_blank" rel="noopener">pengumuman KSEI (PDF)</a></p>` : ""}
+        <p class="mt">DPS 12 bulan terakhir <strong>${s.dps_ttm ? fmtNum(s.dps_ttm, 2) : "—"}</strong> · yield <strong>${s.yield_ttm != null ? fmtNum(s.yield_ttm, 2) + "%" : "—"}</strong>${(s.div?.pay_months || []).length ? ` · Biasanya cair: <strong>${s.div.pay_months.map((m) => MONTHS[m - 1]).join(", ")}</strong>` : ""}</p>
+        ${simLine(s, modalVal())}
+        ${s.div?.last ? `<details class="mt"><summary class="small">Jadwal terakhir (${parseDay(s.div.last.pay?.date || s.div.last.ex?.date)})</summary>${schedTable(s.div.last)}</details>` : ""}
+        ${s.divs?.length ? `<details class="mt"><summary class="small">Riwayat ex-date Yahoo (${s.divs.length})</summary><table class="prose"><thead><tr><th>Ex-date</th><th>DPS</th></tr></thead><tbody>${s.divs.slice().reverse().map((d) => `<tr><td>${parseDay(d.ex)}</td><td>${fmtNum(d.dps, 2)}</td></tr>`).join("")}</tbody></table></details>` : ""}
+        <button type="button" class="icon-btn mt" data-calc-from="${s.code}">Hitung dividen saham ini</button>
       </div>
 
       <div class="card">
@@ -843,6 +852,141 @@
     `;
   }
 
+  // ================= DIVIDEN =================
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+  const DEFAULT_MODAL = { id: 5000000, us: 1000, jp: 500000 };
+  function todayMkt() { return new Date().toLocaleDateString("en-CA", { timeZone: M().tz }); }
+  function daysBetween(a, b) { return Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 86400000); }
+  function modalVal() {
+    const v = state.divModal?.[state.mkt];
+    return v == null || v === "" ? DEFAULT_MODAL[state.mkt] : Number(v);
+  }
+  function taxRateFor(reinvest) {
+    if (state.mkt === "id") return reinvest ? 0 : 0.1;
+    if (state.mkt === "jp") return 0.20315;
+    return 1 - 0.9 * (1 - 0.20315);
+  }
+  function taxLabel(reinvest) {
+    if (state.mkt === "jp") return "pajak Jepang 20,315%";
+    if (state.mkt === "us") return "pajak ±28,3% (AS 10% + Jepang)";
+    return reinvest ? "pajak 0% (reinvest sesuai aturan)" : "PPh final 10%";
+  }
+  function lotSize() { return M().lot; }
+  function divNext(s) { return s.div?.next || null; }
+  function dpsPerPay(s) {
+    const n = divNext(s);
+    const cur = n?.dps_currency || s.div?.last?.dps_currency;
+    if (cur && cur !== M().cur) return { dps: null, foreign: cur };
+    if (n?.dps != null) return { dps: n.dps, basis: n.dps_status === "resmi" ? "DPS resmi berikutnya" : "DPS pembayaran yang sama tahun lalu" };
+    if (s.div?.last?.dps != null) return { dps: s.div.last.dps, basis: "DPS pembayaran terakhir" };
+    if (s.last_dps != null) return { dps: s.last_dps, basis: "DPS terakhir (Yahoo)" };
+    return { dps: null };
+  }
+  // Simulasi modal → lot → dividen (dari pembayaran nyata 12 bulan terakhir, bukan jaminan)
+  function divSim(s, modal, opts = {}) {
+    const price = opts.price != null && opts.price !== "" ? Number(opts.price) : (quoteOf(s).price || s.price);
+    const lot = lotSize();
+    const lots = price > 0 ? Math.floor(modal / (price * lot)) : 0;
+    const shares = lots * lot;
+    const cost = shares * price;
+    const per = dpsPerPay(s);
+    const dps = opts.dps != null && opts.dps !== "" ? Number(opts.dps) : per.dps;
+    const rate = taxRateFor(!!opts.reinvest);
+    const grossPer = dps != null ? shares * dps : null;
+    const ttm = s.dps_ttm || 0;
+    const grossYear = shares * ttm;
+    return {
+      price, lot, lots, shares, cost, sisa: modal - cost, dps, dpsBasis: opts.dps ? "isian kamu" : per.basis, foreign: per.foreign,
+      rate, grossPer, taxPer: grossPer == null ? null : grossPer * rate, netPer: grossPer == null ? null : grossPer * (1 - rate),
+      grossYear, netYear: grossYear * (1 - rate), yieldGross: cost ? (grossYear / cost) * 100 : null, yieldNet: cost ? (grossYear * (1 - rate) / cost) * 100 : null,
+      needOneLot: price * lot,
+    };
+  }
+  function modalWord(n) {
+    if (state.mkt === "id") return n >= 1e6 && n % 1e6 === 0 ? `Rp${fmtNum(n / 1e6)} juta` : rp(n);
+    return rp(n);
+  }
+  function lotWord(lots) {
+    if (state.mkt === "us") return `${fmtNum(lots)} saham`;
+    if (state.mkt === "jp") return `${fmtNum(lots)} unit (${fmtNum(lots * 100)} lbr)`;
+    return `${fmtNum(lots)} lot`;
+  }
+  function simLine(s, modal) {
+    const r = divSim(s, modal);
+    if (r.foreign) return `<div class="sim small muted">DPS dibayar dalam ${escapeHtml(r.foreign)} — hitung manual di detail.</div>`;
+    if (!r.lots) return `<div class="sim small muted">${modalWord(modal)} belum cukup untuk ${state.mkt === "us" ? "1 saham" : "1 lot"} (butuh ${rp(r.needOneLot)}).</div>`;
+    if (!s.dps_ttm && r.dps == null) return "";
+    return `<div class="sim"><span class="lbl">Beli ${modalWord(modal)}</span> → ${lotWord(r.lots)} (${rp(r.cost)}) → dividen bersih ±<strong>${rp(r.netYear)}</strong>/tahun${r.netPer != null ? ` · ±${rp(r.netPer)} per pembayaran` : ""} <span class="faint">(dari pembayaran 12 bln terakhir, bukan jaminan)</span></div>`;
+  }
+  function stBadge(f) {
+    if (!f) return `<span class="badge thin">—</span>`;
+    if (f.status === "resmi") return `<span class="badge beli" title="${escapeHtml(f.basis)}">resmi</span>`;
+    if (f.status === "resmi*") return `<span class="badge board" title="${escapeHtml(f.basis)}">resmi*</span>`;
+    return `<span class="badge tunggu" title="${escapeHtml(f.basis)}">perkiraan</span>`;
+  }
+  function countdown(n) {
+    if (!n?.cum) return "";
+    const t = todayMkt();
+    const dc = daysBetween(t, n.cum.date);
+    const pay = n.pay?.date;
+    if (dc > 1) return `<span class="cd soon">Beli paling lambat ${dc} hari lagi</span>`;
+    if (dc === 1) return `<span class="cd soon">Besok hari terakhir beli (cum)</span>`;
+    if (dc === 0) return `<span class="cd now">Hari ini cum date — hari terakhir beli!</span>`;
+    if (pay && daysBetween(t, pay) >= 0) {
+      const dp = daysBetween(t, pay);
+      return `<span class="cd wait">Cum sudah lewat · yang sudah pegang tinggal tunggu cair ${dp === 0 ? "hari ini" : dp + " hari lagi"}</span>`;
+    }
+    return `<span class="cd past">Sudah lewat, tunggu jadwal berikutnya</span>`;
+  }
+  function schedTable(n) {
+    if (!n) return `<p class="muted small">Belum ada jadwal resmi dan pola tahun lalu tidak cukup untuk perkiraan.</p>`;
+    const row = (lbl, f, strong) => `<tr><td>${lbl}</td><td>${f ? (strong ? `<strong>${parseDay(f.date)}</strong>` : parseDay(f.date)) : "—"}</td><td>${stBadge(f)}</td></tr>`;
+    return `<table class="sched"><tbody>
+      ${row("Beli paling lambat (cum date)", n.cum, true)}
+      ${row("Ex date (mulai boleh jual)", n.ex)}
+      ${row("Recording date", n.record)}
+      ${row("Tanggal cair (payment)", n.pay, true)}
+      <tr><td>Dividen per lembar</td><td><strong>${n.dps != null ? (n.dps_currency && n.dps_currency !== M().cur ? n.dps_currency + " " + fmtNum(n.dps, 3) : rp(n.dps, n.dps % 1 ? 2 : (M().cur === "USD" ? 2 : 0))) : "—"}</strong></td><td>${n.dps != null ? stBadge({ status: n.dps_status || "perkiraan", basis: "DPS" }) : ""}</td></tr>
+    </tbody></table>`;
+  }
+  function divRow(s, modal) {
+    const n = divNext(s);
+    const months = (s.div?.pay_months || []).map((m) => MONTHS[m - 1]).join(", ");
+    return `<article class="card stock-card div-card" data-open="${s.code}">
+      <div class="stock">
+        <div><div class="code">${escapeHtml(s.code)} ${badgeSignal(s.signal)} ${n ? (s.div.next_is_official ? `<span class="badge beli">jadwal resmi</span>` : `<span class="badge tunggu">perkiraan</span>`) : ""}</div></div>
+        <div class="right"><div class="price">${s.yield_ttm != null ? fmtNum(s.yield_ttm, 2) + "%" : "—"}</div><div class="qt-time">yield 12 bln</div></div>
+        <div class="name">${escapeHtml(s.name)}</div>
+      </div>
+      ${n ? `<div class="mt">${countdown(n)}</div>
+      <div class="dates4">
+        <div><span class="lbl">Beli paling lambat</span><b>${parseDay(n.cum?.date)}</b>${stBadge(n.cum)}</div>
+        <div><span class="lbl">Ex date</span><b>${parseDay(n.ex?.date)}</b>${stBadge(n.ex)}</div>
+        <div><span class="lbl">Recording</span><b>${parseDay(n.record?.date)}</b>${stBadge(n.record)}</div>
+        <div><span class="lbl">Cair</span><b>${parseDay(n.pay?.date)}</b>${stBadge(n.pay)}</div>
+      </div>
+      <div class="small mt">DPS ${n.dps != null ? (n.dps_currency && n.dps_currency !== M().cur ? n.dps_currency + " " + fmtNum(n.dps, 3) : rp(n.dps, n.dps % 1 ? 2 : undefined)) : "—"} · harga ${px(quoteOf(s).price)}${months ? ` · Biasanya cair: <strong>${months}</strong>` : ""}</div>` :
+      `<div class="small muted mt">Belum ada jadwal berikutnya.${months ? ` Biasanya cair: <strong>${months}</strong>.` : ""}</div>`}
+      ${simLine(s, modal)}
+    </article>`;
+  }
+  function divExplainer() {
+    const settle = state.mkt === "us" ? "T+1: beli paling lambat 1 hari bursa sebelum ex date (record = ex date)"
+      : state.mkt === "jp" ? "T+2 (権利付最終日): beli paling lambat 2 hari bursa sebelum recording; ex date = 1 hari bursa sebelum recording"
+      : "T+2: beli paling lambat di cum date; ex date = 1 hari bursa setelah cum; recording = 2 hari bursa setelah cum";
+    return `<details class="card flat explain" ${state.divExplainOpen ? "open" : ""}>
+      <summary><strong>Cara dapat dividen (cum · ex · recording · cair)</strong></summary>
+      <ol class="small">
+        <li><strong>Cum date</strong> = hari terakhir <strong>beli</strong>. Beli sebelum atau <em>pada</em> cum date (pasar reguler) → kamu berhak dapat dividen.</li>
+        <li><strong>Ex date</strong> = beli mulai hari ini <strong>tidak</strong> dapat dividen. Tapi kalau kamu sudah pegang sejak cum date, <strong>boleh jual mulai ex date</strong> dan tetap dapat dividen.</li>
+        <li><strong>Recording date</strong> = KSEI/biro mencatat siapa pemegang saham (hasil settlement ${state.mkt === "us" ? "T+1" : "T+2"}).</li>
+        <li><strong>Tanggal cair (payment)</strong> = dividen masuk ke RDN/rekening sekuritas, sudah dipotong pajak.</li>
+      </ol>
+      <p class="small muted">${settle}. Harga biasanya turun kira-kira sebesar dividen di ex date — dividen bukan uang gratis.</p>
+      <p class="small muted"><span class="badge beli">resmi</span> dari sumber resmi (${state.mkt === "id" ? "KSEI: API jadwal aksi korporasi + PDF pengumuman" : state.mkt === "us" ? "Nasdaq dividend calendar" : "belum ada sumber resmi gratis untuk Jepang"}). <span class="badge board">resmi*</span> dihitung dari tanggal resmi dengan aturan settlement. <span class="badge tunggu">perkiraan</span> dari pola tahun lalu — cek pengumuman emiten sebelum bertindak.</p>
+    </details>`;
+  }
+
   function dividendList() {
     return (state.market.stocks || [])
       .filter((s) => s.yield_ttm != null && s.dps_ttm > 0)
@@ -850,87 +994,102 @@
   }
 
   function renderDividen() {
-    const all = dividendList();
-    const good = all.filter((s) => s.yield_ttm >= 4 && isLiquid(s));
-    const show = good.length ? good : all.filter((s) => isLiquid(s)).slice(0, 40);
+    const modal = modalVal();
+    const view = state.divView || "terdekat";
+    const t = todayMkt();
+    const stocks = state.market.stocks || [];
+    const payers = stocks.filter((s) => (s.dps_ttm || 0) > 0 || s.div?.next);
+    const ds = state.market.dividend_schedule || {};
+    let body = "";
+    if (view === "terdekat") {
+      const withNext = payers.filter((s) => divNext(s)?.cum?.date);
+      const upcoming = withNext.filter((s) => daysBetween(t, divNext(s).cum.date) >= 0)
+        .sort((a, b) => divNext(a).cum.date.localeCompare(divNext(b).cum.date) || (b.yield_ttm || 0) - (a.yield_ttm || 0));
+      const waiting = withNext.filter((s) => daysBetween(t, divNext(s).cum.date) < 0 && divNext(s).pay?.date && daysBetween(t, divNext(s).pay.date) >= 0)
+        .sort((a, b) => divNext(a).pay.date.localeCompare(divNext(b).pay.date));
+      const off = upcoming.filter((s) => s.div.next_is_official);
+      const est = upcoming.filter((s) => !s.div.next_is_official && daysBetween(t, divNext(s).cum.date) <= 120);
+      const lim = state.divShowAll ? 400 : 25;
+      body = `
+        <div class="sec-head"><h2>Jadwal dividen terdekat<span>Diurutkan dari cum date (hari terakhir beli) paling dekat</span></h2></div>
+        <h3 class="subh">Sudah diumumkan resmi (${fmtNum(off.length)})</h3>
+        ${off.length ? off.map((s) => divRow(s, modal)).join("") : `<div class="card empty">Belum ada pengumuman resmi dengan cum date ke depan${state.mkt === "jp" ? " (Jepang: belum ada sumber resmi gratis)" : ""}.</div>`}
+        ${waiting.length ? `<h3 class="subh">Cum sudah lewat, tinggal tunggu cair (${fmtNum(waiting.length)})</h3>${waiting.slice(0, lim).map((s) => divRow(s, modal)).join("")}` : ""}
+        <h3 class="subh">Perkiraan 4 bulan ke depan (${fmtNum(est.length)})</h3>
+        <p class="hint tight">Dari pola tahun lalu — tanggal & DPS bisa berubah atau batal.</p>
+        ${est.slice(0, lim).map((s) => divRow(s, modal)).join("") || `<div class="card empty">Tidak ada.</div>`}
+        ${est.length > lim ? `<button type="button" class="icon-btn" data-div-all="1">Tampilkan semua (${est.length})</button>` : ""}`;
+    } else if (view === "kalender") {
+      const mo = state.divMonth || 0;
+      const counts = MONTHS.map((_, i) => payers.filter((s) => (s.div?.pay_months || []).includes(i + 1)).length);
+      const list = payers.filter((s) => !mo || (s.div?.pay_months || []).includes(mo))
+        .sort((a, b) => (b.yield_ttm || 0) - (a.yield_ttm || 0));
+      body = `
+        <div class="sec-head"><h2>Kalender dividen<span>Bulan biasanya cair — dari riwayat pembayaran, perkiraan</span></h2></div>
+        <div class="month-grid">
+          <button type="button" data-div-month="0" aria-pressed="${!mo}">Semua<small>${fmtNum(payers.length)}</small></button>
+          ${MONTHS.map((m, i) => `<button type="button" data-div-month="${i + 1}" aria-pressed="${mo === i + 1}">${m}<small>${counts[i]}</small></button>`).join("")}
+        </div>
+        <p class="hint tight">${mo ? `${fmtNum(list.length)} saham biasanya cair di bulan <strong>${MONTHS[mo - 1]}</strong>` : `${fmtNum(list.length)} saham pembagi dividen`} · urut yield tertinggi. Dasar: ${escapeHtml("tanggal bayar resmi 12 bln terakhir + pola ex-date ≥2 tahun")}.</p>
+        ${list.slice(0, state.divShowAll ? 600 : 40).map((s) => divRow(s, modal)).join("")}
+        ${list.length > 40 && !state.divShowAll ? `<button type="button" class="icon-btn" data-div-all="1">Tampilkan semua (${list.length})</button>` : ""}`;
+    } else {
+      const all = dividendList();
+      const good = all.filter((s) => s.yield_ttm >= 4 && isLiquid(s));
+      const show = (good.length ? good : all.filter((s) => isLiquid(s))).slice(0, state.divShowAll ? 400 : 30);
+      body = `
+        <div class="sec-head"><h2>Yield tertinggi${good.length ? " (likuid ≥ 4%)" : ""}<span>Yield = DPS 12 bln terakhir ÷ harga sekarang · likuid ≥ ${escapeHtml(state.market.min_value_label || "Rp2 miliar")}/hari</span></h2></div>
+        ${show.map((s) => divRow(s, modal)).join("")}
+        <p class="small faint">Yield tinggi bisa karena harga sedang jatuh atau ada dividen spesial. Cek riwayat di halaman saham.</p>`;
+    }
     const c = calcResult();
-    const codes = (state.market.stocks || []).map((s) => `<option value="${s.code}">${escapeHtml(s.name)}</option>`).join("");
-    const shownN = Math.min(show.length, 30);
-    const shown = show.slice(0, 30);
+    const codes = stocks.filter((s) => (s.dps_ttm || 0) > 0).map((s) => `<option value="${s.code}">${escapeHtml(s.name)}</option>`).join("");
     return `
-      <div class="sec-head"><h2>Dividen<span>Ex-date &amp; DPS dari event Yahoo Finance, bukan karangan</span></h2></div>
-      <div class="infobox">Yield TTM = jumlah DPS 12 bulan terakhir (event Yahoo) dibagi harga terakhir. Cum date di sini <strong>perkiraan</strong> (hari bursa sebelum ex). Tanggal bayar resmi sering tidak ada di Yahoo — app ini tidak mengisi tanggal palsu.</div>
-      <div class="card">
-        <h3>Kalkulator dividen</h3>
-        <div class="form">
-          <label>Kode emiten<input id="calc-code" list="calc-codes" value="${escapeHtml(state.calc.code)}" placeholder="${state.mkt === "us" ? "Contoh: KO" : state.mkt === "jp" ? "Contoh: 7203" : "Contoh: BBCA"}" autocomplete="off" /><datalist id="calc-codes">${codes}</datalist></label>
-          <label>${state.mkt === "us" ? "Jumlah saham" : state.mkt === "jp" ? "Jumlah unit (100 lbr)" : "Jumlah lot"}<input id="calc-lots" type="number" min="1" step="1" value="${escapeHtml(state.calc.lots)}" /></label>
-          <label>Harga per lembar (kosongkan = harga terakhir)<input id="calc-price" type="number" min="0" step="1" value="${escapeHtml(state.calc.price)}" placeholder="${c.priceHint || ""}" /></label>
-          <label>Dividen per lembar / DPS (kosongkan = DPS TTM)<input id="calc-dps" type="number" min="0" step="0.01" value="${escapeHtml(state.calc.dps)}" placeholder="${c.dpsHint || ""}" /></label>
-          ${state.mkt !== "id" ? `<p class="small muted">Asumsi pajak: kamu residen Jepang, rekening biasa (bukan NISA). Saham Jepang: 20,315% dipotong. Saham AS: dipotong 10% di AS (treaty) lalu 20,315% di Jepang (bisa klaim kredit pajak luar negeri di SPT). Perkiraan, bukan nasihat pajak.</p>` : ""}
-          <label class="toggle" ${state.mkt !== "id" ? "hidden" : ""}><input id="calc-reinvest" type="checkbox" ${state.calc.reinvest ? "checked" : ""} /> Saya reinvest sesuai aturan (lihat catatan pajak)</label>
-        </div>
-        <div class="kv three mt">
-          <div class="cell"><span class="lbl">Modal (tanpa biaya broker)</span><span class="val">${rp(c.modal)}</span></div>
-          <div class="cell"><span class="lbl">Dividen kotor</span><span class="val">${rp(c.kotor)}</span></div>
-          <div class="cell"><span class="lbl">${state.mkt === "jp" ? "Pajak Jepang 20,315%" : state.mkt === "us" ? "Pajak ±28,3% (AS 10% + Jepang)" : c.reinvest ? "Pajak (diasumsikan 0)" : "PPh 10% final"}</span><span class="val">${rp(c.pajak)}</span></div>
-          <div class="cell"><span class="lbl">Dividen bersih</span><span class="val">${rp(c.bersih)}</span></div>
-          <div class="cell"><span class="lbl">Yield kotor / bersih</span><span class="val">${fmtNum(c.yieldKotor, 2)}% / ${fmtNum(c.yieldBersih, 2)}%</span></div>
-          <div class="cell"><span class="lbl">Lembar</span><span class="val">${fmtNum(c.lembar)}</span></div>
-        </div>
-        <div class="example mt">
-          <div class="lbl">Kapan harus beli</div>
-          <p>Supaya dapat dividen, kamu harus sudah beli paling lambat di <strong>cum date</strong>. Karena settlement T+2, beli di cum date (pasar reguler) biasanya masih sempat masuk pencatatan. Beli mulai <strong>ex date</strong> = tidak dapat dividen tersebut. Kalau hanya ada ex-date Yahoo, cum perkiraan = hari bursa sebelumnya — cek pengumuman resmi emiten/KSEI sebelum bertindak.</p>
-        </div>
-        <p class="small muted" ${state.mkt !== "id" ? "hidden" : ""}><strong>Pajak (WP orang pribadi dalam negeri, aturan yang berlaku). </strong>Dividen dalam negeri bisa dikecualikan dari objek PPh jika diinvestasikan lagi di Indonesia dalam jangka waktu tertentu (paling lambat 31 Maret tahun berikutnya, dipegang minimal 3 tahun pajak, plus laporan realisasi dan SPT) — UU Cipta Kerja / UU HPP jo. PMK-18/PMK.03/2021. Kalau syarat itu tidak dipenuhi, terutang <strong>PPh final 10%</strong> (disetor sendiri). Ini ringkasan, bukan nasihat pajak. Non-residen beda aturannya.</p>
+      <div class="sec-head"><h2>Dividen<span>${fmtNum(payers.length)} saham bayar dividen · jadwal resmi ${fmtNum(ds.next_official || 0)} · perkiraan ${fmtNum(ds.next_estimated || 0)}${ds.updated_utc ? ` · cek sumber ${parseDateTimeWib(ds.updated_utc)}` : ""}</span></h2></div>
+      ${divExplainer()}
+      <div class="card modal-card">
+        <label class="modal-in">Modal simulasi (${curSym()})<input id="div-modal" type="number" min="0" step="${state.mkt === "us" ? 10 : 1000}" value="${escapeHtml(String(modal))}" /></label>
+        <p class="small faint">Dipakai di tiap baris: modal → ${state.mkt === "us" ? "jumlah saham" : state.mkt === "jp" ? "unit (100 lembar)" : "lot (100 lembar)"} dibulatkan ke bawah → dividen bersih (${taxLabel(false)}). Berdasar pembayaran 12 bulan terakhir, <strong>bukan jaminan</strong>.</p>
       </div>
+      <div class="filters">
+        ${[["terdekat", "Jadwal terdekat"], ["kalender", "Kalender Jan–Des"], ["yield", "Yield tertinggi"]].map(([id, lab]) => `<button type="button" data-div-view="${id}" aria-pressed="${view === id}">${lab}</button>`).join("")}
+      </div>
+      ${body}
 
-      <div class="sec-head"><h2>Daftar yield${good.length ? " likuid ≥ 4%" : ""}<span>${good.length ? `Filter: yield TTM ≥ 4% dan rata-rata nilai 20 hari ≥ ${escapeHtml(state.market.min_value_label || "Rp2 miliar")}` : "Tidak ada yang lolos filter ketat; menampilkan yang likuid ber-dividen"}</span></h2></div>
-      ${shown.length ? `<p class="hint tight">Menampilkan ${fmtNum(shownN)} yield tertinggi dari ${fmtNum(show.length)} yang lolos filter. Ketuk kartu untuk riwayat DPS.</p>` : ""}
-      ${shown.map((s) => `
-        <article class="card stock-card" data-open="${s.code}">
-          <div class="stock">
-            <div>
-              <div class="code">${escapeHtml(s.code)} ${badgeSignal(s.signal)}</div>
-              <div class="name">${escapeHtml(s.name)}</div>
-            </div>
-            <div class="right">
-              <div class="price">${fmtNum(s.yield_ttm, 2)}%</div>
-              <div class="small muted">yield TTM</div>
-            </div>
-          </div>
-          <div class="small muted mt">DPS 12bln ${fmtNum(s.dps_ttm, 2)} · harga ${px(s.price)} · ex terakhir ${parseDay(s.last_ex)}${s.last_cum_perkiraan ? ` · cum perkiraan ${parseDay(s.last_cum_perkiraan)}` : ""} · ${M().lotWord} ${rp(s.lot_cost)}</div>
-          ${s.next_div_perkiraan ? `<div class="small faint">Perkiraan ex berikutnya ~ ${parseDay(s.next_div_perkiraan.ex_perkiraan)} (pola lama, bukan resmi)</div>` : ""}
-        </article>`).join("")}
-      <p class="small faint">Yield tinggi bisa karena harga sedang jatuh atau ada special dividend. Cek riwayat DPS di halaman saham.</p>
+      <div class="card" id="kalkulator">
+        <h3>Kalkulator dividen per saham</h3>
+        <div class="form">
+          <label>Kode<input id="calc-code" list="calc-codes" value="${escapeHtml(state.calc.code)}" placeholder="${state.mkt === "us" ? "Contoh: KO" : state.mkt === "jp" ? "Contoh: 7203" : "Contoh: BBCA"}" autocomplete="off" /><datalist id="calc-codes">${codes}</datalist></label>
+          <label>Modal (${curSym()})<input id="calc-modal" type="number" min="0" step="${state.mkt === "us" ? 10 : 1000}" value="${escapeHtml(state.calc.modal === "" || state.calc.modal == null ? String(modal) : state.calc.modal)}" /></label>
+          <label>Harga per lembar (kosong = harga terbaru)<input id="calc-price" type="number" min="0" step="any" value="${escapeHtml(state.calc.price)}" placeholder="${c.priceHint || ""}" /></label>
+          <label>Dividen per lembar per pembayaran (kosong = otomatis)<input id="calc-dps" type="number" min="0" step="any" value="${escapeHtml(state.calc.dps)}" placeholder="${c.dpsHint || ""}" /></label>
+          <label class="toggle" ${state.mkt !== "id" ? "hidden" : ""}><input id="calc-reinvest" type="checkbox" ${state.calc.reinvest ? "checked" : ""} /> Saya reinvest sesuai aturan (pajak 0%)</label>
+        </div>
+        ${c.s ? `<div class="kv three mt">
+          <div class="cell"><span class="lbl">${state.mkt === "us" ? "Jumlah saham" : state.mkt === "jp" ? "Unit (100 lbr)" : "Lot (100 lbr)"}</span><span class="val">${fmtNum(c.lots)}</span></div>
+          <div class="cell"><span class="lbl">Biaya beli</span><span class="val">${rp(c.cost)}</span></div>
+          <div class="cell"><span class="lbl">Sisa modal</span><span class="val">${rp(c.sisa)}</span></div>
+          <div class="cell"><span class="lbl">Dividen kotor / bayar</span><span class="val">${c.grossPer == null ? "—" : rp(c.grossPer)}</span></div>
+          <div class="cell"><span class="lbl">${escapeHtml(taxLabel(c.reinvest))}</span><span class="val">${c.taxPer == null ? "—" : rp(c.taxPer)}</span></div>
+          <div class="cell"><span class="lbl">Bersih diterima / bayar</span><span class="val">${c.netPer == null ? "—" : rp(c.netPer)}</span></div>
+          <div class="cell"><span class="lbl">Total 12 bln kotor / bersih</span><span class="val">${rp(c.grossYear)} / ${rp(c.netYear)}</span></div>
+          <div class="cell"><span class="lbl">Yield kotor / bersih</span><span class="val">${fmtNum(c.yieldGross, 2)}% / ${fmtNum(c.yieldNet, 2)}%</span></div>
+          <div class="cell"><span class="lbl">Lembar</span><span class="val">${fmtNum(c.shares)}</span></div>
+        </div>
+        <p class="small muted">DPS per pembayaran: ${escapeHtml(c.dpsBasis || "—")}. Total 12 bulan = DPS 12 bln terakhir (${fmtNum(c.s.dps_ttm, 2)}) × lembar. ${c.lots ? "" : `Modal belum cukup 1 ${state.mkt === "us" ? "saham" : "lot"} (butuh ${rp(c.needOneLot)}).`}</p>` : `<p class="muted small mt">Pilih kode saham untuk menghitung.</p>`}
+        <p class="small muted" ${state.mkt !== "id" ? "" : "hidden"}>Asumsi pajak: residen Jepang, rekening biasa (bukan NISA). Saham AS: dipotong 10% di AS lalu 20,315% di Jepang (bisa klaim kredit pajak luar negeri). Perkiraan, bukan nasihat pajak.</p>
+        <p class="small muted" ${state.mkt !== "id" ? "hidden" : ""}><strong>Pajak:</strong> dividen dalam negeri untuk WP orang pribadi bebas PPh jika diinvestasikan kembali di Indonesia sesuai syarat (UU HPP jo. PMK-18/2021); kalau tidak, PPh final 10%. Ringkasan, bukan nasihat pajak.</p>
+      </div>
       ${disclaimer()}
     `;
   }
 
   function calcResult() {
-    const code = state.calc.code;
-    const s = code ? stockByCode(code) : null;
-    const lots = Math.max(0, Number(state.calc.lots) || 0);
-    const price = state.calc.price === "" || state.calc.price == null
-      ? (s ? s.price : 0)
-      : Number(state.calc.price);
-    const dps = state.calc.dps === "" || state.calc.dps == null
-      ? (s && s.dps_ttm != null ? s.dps_ttm : (s?.last_dps || 0))
-      : Number(state.calc.dps);
-    const lembar = lots * (state.mkt === "us" ? 1 : 100);
-    const modal = lembar * (Number(price) || 0);
-    const kotor = lembar * (Number(dps) || 0);
-    const reinvest = !!state.calc.reinvest;
-    const taxRate = state.mkt === "id" ? (reinvest ? 0 : 0.1) : state.mkt === "jp" ? 0.20315 : 1 - 0.9 * (1 - 0.20315);
-    const pajak = taxRate * kotor;
-    const bersih = kotor - pajak;
-    const yieldKotor = modal ? (kotor / modal) * 100 : 0;
-    const yieldBersih = modal ? (bersih / modal) * 100 : 0;
-    return {
-      lembar, modal, kotor, pajak, bersih, yieldKotor, yieldBersih, reinvest,
-      priceHint: s ? String(s.price) : "",
-      dpsHint: s && s.dps_ttm != null ? String(s.dps_ttm) : "",
-    };
+    const s = state.calc.code ? stockByCode(state.calc.code) : null;
+    const modal = state.calc.modal === "" || state.calc.modal == null ? modalVal() : Number(state.calc.modal);
+    if (!s) return { s: null, reinvest: !!state.calc.reinvest };
+    const r = divSim(s, modal, { price: state.calc.price, dps: state.calc.dps, reinvest: !!state.calc.reinvest });
+    return { s, ...r, reinvest: !!state.calc.reinvest, priceHint: String(quoteOf(s).price ?? ""), dpsHint: r.dps != null ? String(r.dps) : "" };
   }
 
   function renderBelajar() {
@@ -1106,7 +1265,9 @@
       cc.addEventListener("change", apply);
       cc.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); apply(); } });
     }
-    ["lots", "price", "dps"].forEach((k) => {
+    const dm = $("#div-modal");
+    if (dm) dm.addEventListener("change", (e) => { state.divModal[state.mkt] = e.target.value; state.calc.modal = ""; render(); });
+    ["modal", "price", "dps"].forEach((k) => {
       const el = $(`#calc-${k}`);
       if (el) el.addEventListener("change", (e) => { state.calc[k] = e.target.value; render(); });
     });
@@ -1161,8 +1322,17 @@
       state.calc.price = "";
       state.calc.dps = "";
       go({ tab: "dividen", selected: null });
+      setTimeout(() => $("#kalkulator")?.scrollIntoView({ block: "start" }), 50);
       return;
     }
+    const dvv = e.target.closest("[data-div-view]");
+    if (dvv) { state.divView = dvv.dataset.divView; state.divShowAll = false; render(); return; }
+    const dmo = e.target.closest("[data-div-month]");
+    if (dmo) { state.divMonth = Number(dmo.dataset.divMonth); state.divShowAll = false; render(); return; }
+    const dall = e.target.closest("[data-div-all]");
+    if (dall) { state.divShowAll = true; render(); return; }
+    const sumEx = e.target.closest("details.explain > summary");
+    if (sumEx) { state.divExplainOpen = !sumEx.parentElement.open; return; }
     const opt = e.target.closest("button.opt");
     if (opt && opt.dataset.quizId) {
       const quiz = findQuiz(opt.dataset.quizId);
