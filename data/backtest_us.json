@@ -1,0 +1,129 @@
+{
+  "range": "5y",
+  "interval": "1d",
+  "aturan": {
+    "A_vol_spike": "Volume ≥ 1,8× rata-rata 20 hari, nilai transaksi 20 hari ≥ US$20 juta",
+    "B_breakout_vol": "Tutup ≥ highest 20 hari + volume ≥ 1,5× + nilai 20 hari ≥ US$20 juta",
+    "C_screener": "Sinyal 'potensi naik kuat' di app: volume ≥ 1,8× dan (breakout 20 hari atau tutup dekat high + naik ≥ 3%), likuid US$20 juta",
+    "D_beli_aturan": "Sinyal BELI (breakout bervolume atau retest support di tren naik)",
+    "E_ikut_bandar": "Ikut Bandar (volume-based): likuid US$20 juta, volume ≥ 1,8×, harga naik, tutup dekat high, OBV atau A/D 5 hari naik, breakout highest 20 hari. Bukan broker summary/foreign flow."
+  },
+  "catatan_next_day": "Return diukur tutup hari sinyal → tutup hari bursa berikutnya. Bukan jaminan hasil ke depan.",
+  "catatan_trade_beli": "Simulasi sinyal BELI: masuk di open hari berikutnya, keluar di SL / TP1 (1,5R) / sinyal JUAL / maksimal 20 hari. Kalau SL dan TP1 tersentuh di hari yang sama, dihitung kalah di SL (konservatif).",
+  "next_day": {
+    "A_vol_spike": {
+      "definisi": "Volume ≥ 1,8× rata-rata 20 hari, nilai transaksi 20 hari ≥ US$20 juta",
+      "n": 34958,
+      "n_ge_10": 452,
+      "n_ge_5": 1565,
+      "n_ge_0": 18462,
+      "n_le_m5": 1607,
+      "pct_ge_10": 1.29,
+      "pct_ge_5": 4.48,
+      "pct_ge_0": 52.81,
+      "pct_le_m5": 4.6,
+      "median_pct": 0.12,
+      "avg_pct": 0.11
+    },
+    "B_breakout_vol": {
+      "definisi": "Tutup ≥ highest 20 hari + volume ≥ 1,5× + nilai 20 hari ≥ US$20 juta",
+      "n": 9624,
+      "n_ge_10": 86,
+      "n_ge_5": 393,
+      "n_ge_0": 4809,
+      "n_le_m5": 342,
+      "pct_ge_10": 0.89,
+      "pct_ge_5": 4.08,
+      "pct_ge_0": 49.97,
+      "pct_le_m5": 3.55,
+      "median_pct": -0.0,
+      "avg_pct": 0.04
+    },
+    "C_screener": {
+      "definisi": "Sinyal 'potensi naik kuat' di app: volume ≥ 1,8× dan (breakout 20 hari atau tutup dekat high + naik ≥ 3%), likuid US$20 juta",
+      "n": 7144,
+      "n_ge_10": 96,
+      "n_ge_5": 369,
+      "n_ge_0": 3495,
+      "n_le_m5": 426,
+      "pct_ge_10": 1.34,
+      "pct_ge_5": 5.17,
+      "pct_ge_0": 48.92,
+      "pct_le_m5": 5.96,
+      "median_pct": -0.05,
+      "avg_pct": -0.09
+    },
+    "D_beli_aturan": {
+      "definisi": "Sinyal BELI (breakout bervolume atau retest support di tren naik)",
+      "n": 18438,
+      "n_ge_10": 139,
+      "n_ge_5": 663,
+      "n_ge_0": 9470,
+      "n_le_m5": 558,
+      "pct_ge_10": 0.75,
+      "pct_ge_5": 3.6,
+      "pct_ge_0": 51.36,
+      "pct_le_m5": 3.03,
+      "median_pct": 0.05,
+      "avg_pct": 0.07
+    },
+    "E_ikut_bandar": {
+      "definisi": "Ikut Bandar (volume-based): likuid US$20 juta, volume ≥ 1,8×, harga naik, tutup dekat high, OBV atau A/D 5 hari naik, breakout highest 20 hari. Bukan broker summary/foreign flow.",
+      "n": 2727,
+      "n_ge_10": 30,
+      "n_ge_5": 123,
+      "n_ge_0": 1345,
+      "n_le_m5": 125,
+      "pct_ge_10": 1.1,
+      "pct_ge_5": 4.51,
+      "pct_ge_0": 49.32,
+      "pct_le_m5": 4.58,
+      "median_pct": -0.03,
+      "avg_pct": -0.01
+    }
+  },
+  "day5": {
+    "E_ikut_bandar": {
+      "definisi": "Return tutup hari sinyal Ikut Bandar → tutup 5 hari bursa kemudian.",
+      "n": 2727,
+      "n_ge_10": 114,
+      "n_ge_5": 347,
+      "n_ge_0": 1369,
+      "n_le_m5": 359,
+      "pct_ge_10": 4.18,
+      "pct_ge_5": 12.72,
+      "pct_ge_0": 50.2,
+      "pct_le_m5": 13.16,
+      "median_pct": 0.03,
+      "avg_pct": 0.19
+    }
+  },
+  "trade_beli": {
+    "n": 18438,
+    "n_ge_10": 610,
+    "n_ge_5": 4529,
+    "n_ge_0": 8713,
+    "n_le_m5": 3197,
+    "pct_ge_10": 3.31,
+    "pct_ge_5": 24.56,
+    "pct_ge_0": 47.26,
+    "pct_le_m5": 17.34,
+    "median_pct": -0.86,
+    "avg_pct": 0.24,
+    "win_rate": 46.06,
+    "n_trades": 18438,
+    "n_win": 8492,
+    "n_lose": 9946
+  },
+  "trade_beli_zona": {
+    "definisi": "Sinyal BELI, tapi hanya masuk kalau hari berikutnya harga turun/masih di area masuk (≤ batas atas zona). Isi di open atau batas atas zona, keluar di SL / TP1 / maks 20 hari (SL & TP hari sama = kalah).",
+    "n_trades": 17187,
+    "n_skip_lewat_zona": 1251,
+    "win_rate": 46.48,
+    "median_pct": -1.11,
+    "avg_pct": 0.31
+  },
+  "market": "us",
+  "min_value_likuid": 20000000,
+  "catatan_ikut_bandar": "Sinyal 'Ikut Bandar' TIDAK memakai broker summary atau foreign flow (data itu tidak tersedia di sumber gratis app ini). Ini inferensi dari volume, nilai transaksi, OBV, Accumulation/Distribution, dan breakout harga. Bukan jejak sekuritas tertentu."
+}

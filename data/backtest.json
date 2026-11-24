@@ -100,21 +100,30 @@
   },
   "trade_beli": {
     "n": 45024,
-    "n_ge_10": 7379,
-    "n_ge_5": 14324,
-    "n_ge_0": 21917,
-    "n_le_m5": 15248,
-    "pct_ge_10": 16.39,
-    "pct_ge_5": 31.81,
-    "pct_ge_0": 48.68,
-    "pct_le_m5": 33.87,
-    "median_pct": -0.96,
+    "n_ge_10": 6693,
+    "n_ge_5": 14356,
+    "n_ge_0": 22610,
+    "n_le_m5": 14748,
+    "pct_ge_10": 14.87,
+    "pct_ge_5": 31.89,
+    "pct_ge_0": 50.22,
+    "pct_le_m5": 32.76,
+    "median_pct": 0.0,
     "avg_pct": -0.25,
-    "win_rate": 37.67,
+    "win_rate": 39.28,
     "n_trades": 45024,
-    "n_win": 16961,
-    "n_lose": 28063
+    "n_win": 17687,
+    "n_lose": 27337
   },
+  "trade_beli_zona": {
+    "definisi": "Sinyal BELI, tapi hanya masuk kalau hari berikutnya harga turun/masih di area masuk (≤ batas atas zona). Isi di open atau batas atas zona, keluar di SL / TP1 / maks 20 hari (SL & TP hari sama = kalah).",
+    "n_trades": 41705,
+    "n_skip_lewat_zona": 3319,
+    "win_rate": 37.02,
+    "median_pct": -1.82,
+    "avg_pct": -0.41
+  },
+  "market": "id",
   "min_value_likuid": 2000000000,
   "catatan_ikut_bandar": "Sinyal 'Ikut Bandar' TIDAK memakai broker summary atau foreign flow (data itu tidak tersedia di sumber gratis app ini). Ini inferensi dari volume, nilai transaksi, OBV, Accumulation/Distribution, dan breakout harga. Bukan jejak sekuritas tertentu."
 }
