@@ -1,0 +1,193 @@
+# Investing — update data otomatis (gratis, tanpa API key).
+# Hasil ditaruh di branch `data` (1 commit saja, di-force-push) supaya repo tidak membengkak.
+# App membaca branch itu lewat api.github.com / raw.githubusercontent.com (CORS terbuka).
+name: Update data saham
+
+on:
+  schedule:
+    # Harga terbaru (mode quotes) tiap 15 menit, Senin–Jumat (jam UTC).
+    # 00:00–09:59 UTC = jam bursa Jepang (09:00 JST) + BEI (09:00–16:15 WIB).
+    - cron: "*/15 0-9 * * 1-5"
+    # 13:00–21:59 UTC = jam bursa AS (09:30–16:00 ET, musim panas & dingin).
+    - cron: "*/15 13-21 * * 1-5"
+    # Rebuild penuh harian setelah tutup: sinyal, backtest, dividen, berita.
+    - cron: "50 6 * * 1-5"   # Jepang  15:50 JST
+    - cron: "35 9 * * 1-5"   # BEI     16:35 WIB
+    - cron: "40 21 * * 1-5"  # AS      16:40 EST / 17:40 EDT
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "quotes (harga cepat) atau full (rebuild sinyal)"
+        default: full
+        type: choice
+        options: [full, quotes]
+      market:
+        description: "id, us, jp, all, atau auto"
+        default: all
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: investing-data-branch
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout kode (main)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Tentukan mode & pasar
+        id: plan
+        env:
+          SCHED: ${{ github.event.schedule }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_MARKET: ${{ inputs.market }}
+        run: |
+          MODE=quotes; MARKET=auto
+          case "$SCHED" in
+            "50 6 * * 1-5")  MODE=full; MARKET=jp ;;
+            "35 9 * * 1-5")  MODE=full; MARKET=id ;;
+            "40 21 * * 1-5") MODE=full; MARKET=us ;;
+          esac
+          if [ -n "$IN_MODE" ]; then MODE="$IN_MODE"; MARKET="${IN_MARKET:-all}"; fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "market=$MARKET" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE market=$MARKET"
+
+      - name: Ambil isi branch data (kalau sudah ada)
+        run: |
+          mkdir -p out
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git fetch --depth=1 origin data
+            git --work-tree=out checkout FETCH_HEAD -- .
+            git reset -q
+          else
+            echo "branch data belum ada — mulai dari snapshot data/ di main"
+            cp data/*.json out/ 2>/dev/null || true
+          fi
+          ls -la out
+
+      - name: Ambil data Yahoo
+        id: fetch
+        env:
+          INVESTING_CACHE: ${{ runner.temp }}/yahoo-cache
+        run: |
+          python3 fetch_market.py --mode "${{ steps.plan.outputs.mode }}" --market "${{ steps.plan.outputs.market }}" --force --out out
+
+      - name: Push ke branch data (1 commit, tanpa riwayat)
+        if: steps.fetch.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd out
+          rm -rf .git
+          git init -q -b data
+          git config user.name "investing-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "data ${{ steps.plan.outputs.mode }} ${{ steps.plan.outputs.market }} $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
+          echo "OK push data"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
