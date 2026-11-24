@@ -10,7 +10,7 @@ on:
     - cron: "*/15 0-9 * * 1-5"
     # 13:00–21:59 UTC = jam bursa AS (09:30–16:00 ET, musim panas & dingin).
     - cron: "*/15 13-21 * * 1-5"
-    # Rebuild penuh harian setelah tutup: sinyal, backtest, dividen, berita.
+    # Rebuild penuh harian setelah tutup: sinyal, backtest, jadwal dividen (KSEI/Nasdaq), berita.
     - cron: "50 6 * * 1-5"   # Jepang  15:50 JST
     - cron: "35 9 * * 1-5"   # BEI     16:35 WIB
     - cron: "40 21 * * 1-5"  # AS      16:40 EST / 17:40 EDT
@@ -76,7 +76,16 @@ jobs:
             echo "branch data belum ada — mulai dari snapshot data/ di main"
             cp data/*.json out/ 2>/dev/null || true
           fi
+          # riwayat jadwal dividen (backfill 400 hari) dari snapshot main kalau belum ada di branch data
+          for f in data/div_hist_*.json; do
+            [ -f "$f" ] && [ ! -f "out/$(basename "$f")" ] && cp "$f" out/ || true
+          done
           ls -la out
+
+      - name: Pasang pdftotext (baca PDF jadwal dividen KSEI)
+        if: steps.plan.outputs.mode == 'full'
+        run: |
+          command -v pdftotext || (sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils)
 
       - name: Ambil data Yahoo
         id: fetch
@@ -99,95 +108,4 @@ jobs:
           git commit -q -m "data ${{ steps.plan.outputs.mode }} ${{ steps.plan.outputs.market }} $(date -u +%Y-%m-%dT%H:%MZ)"
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
           echo "OK push data"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
