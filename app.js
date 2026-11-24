@@ -13,6 +13,34 @@
   const USERS_KEY = "investing-users-v1";
   const SESSION_KEY = "investing-session-v1";
   const PBKDF2_ITERS = 150000;
+  const MARKET_KEY = "investing-market-v1";
+
+  // Pasar yang didukung. File data dibuat GitHub Actions (branch `data`) / fetch_market.py.
+  const MARKETS = {
+    id: { id: "id", flag: "🇮🇩", short: "Indonesia", label: "Indonesia (BEI)", file: "market.json", bt: "backtest.json",
+          cur: "IDR", tz: "Asia/Jakarta", tzl: "WIB", lot: 100, lotWord: "1 lot (100 lbr)", idxName: "IHSG", suffix: ".JK",
+          open: [9, 0], close: [16, 0], days: [1, 2, 3, 4, 5], delay: 10 },
+    us: { id: "us", flag: "🇺🇸", short: "Amerika", label: "Amerika (S&P 500 + Nasdaq-100)", file: "market_us.json", bt: "backtest_us.json",
+          cur: "USD", tz: "America/New_York", tzl: "ET", lot: 1, lotWord: "1 saham", idxName: "S&P 500", suffix: "",
+          open: [9, 30], close: [16, 0], days: [1, 2, 3, 4, 5], delay: 0 },
+    jp: { id: "jp", flag: "🇯🇵", short: "Jepang", label: "Jepang (Nikkei 225)", file: "market_jp.json", bt: "backtest_jp.json",
+          cur: "JPY", tz: "Asia/Tokyo", tzl: "JST", lot: 100, lotWord: "1 unit (100 lbr)", idxName: "Nikkei 225", suffix: ".T",
+          open: [9, 0], close: [15, 30], days: [1, 2, 3, 4, 5], delay: 20 },
+  };
+  // Sumber data online: branch `data` di repo GitHub Pages ini (CORS terbuka, tanpa kunci).
+  const REMOTE = (() => {
+    try {
+      if (new URLSearchParams(location.search).get("data") === "local") return null;
+      const h = location.hostname;
+      if (!h.endsWith(".github.io")) return null;
+      const owner = h.split(".")[0];
+      const repo = location.pathname.split("/").filter(Boolean)[0] || `${owner}.github.io`;
+      return { owner, repo, branch: "data" };
+    } catch (_) { return null; }
+  })();
+  const QUOTES_EVERY_MS = 3 * 60 * 1000;
+  const LIVE_EVERY_MS = 60 * 1000;
+  const MARKET_EVERY_MS = 30 * 60 * 1000;
 
   const EVENT_LABEL = {
     buyback: "Buyback",
@@ -34,6 +62,13 @@
 
   const state = {
     tab: "beranda",
+    mkt: (() => { try { const v = localStorage.getItem(MARKET_KEY); return MARKETS[v] ? v : "id"; } catch (_) { return "id"; } })(),
+    data: {},        // { id: {market, backtest}, us: {...}, jp: {...} }
+    quotes: null,    // quotes.json (GitHub Actions, tiap ~15 menit saat bursa buka)
+    quotesFrom: "",
+    live: { us: {}, jp: {} }, // harga langsung dari CNBC (AS real-time, Jepang tertunda) saat app terbuka
+    liveAt: { us: 0, jp: 0 },
+    loadingMarket: false,
     market: null,
     backtest: null,
     news: null,
@@ -244,17 +279,46 @@
     if (n == null || Number.isNaN(Number(n))) return "—";
     return Number(n).toLocaleString("id-ID", { maximumFractionDigits: dec, minimumFractionDigits: dec });
   }
-  function rp(n, dec = 0) {
+  function curSym() { return { IDR: "Rp", USD: "US$", JPY: "¥" }[M().cur] || ""; }
+  function pxDec(n) {
+    if (M().cur === "USD") return 2;
+    if (M().cur === "JPY") return Number.isInteger(Number(n)) ? 0 : 1;
+    return 0;
+  }
+  // harga per lembar sesuai pasar (Rp tanpa desimal, US$ 2 desimal, ¥)
+  function px(n) {
     if (n == null || Number.isNaN(Number(n))) return "—";
-    return "Rp" + fmtNum(n, dec);
+    return fmtNum(n, pxDec(n));
+  }
+  function rp(n, dec) {
+    if (n == null || Number.isNaN(Number(n))) return "—";
+    const d = dec == null ? (M().cur === "USD" ? 2 : 0) : dec;
+    return curSym() + fmtNum(n, d);
   }
   function rpCompact(n) {
     if (n == null || Number.isNaN(Number(n))) return "—";
     const a = Math.abs(Number(n));
-    if (a >= 1e12) return "Rp" + fmtNum(n / 1e12, 2) + " T";
-    if (a >= 1e9) return "Rp" + fmtNum(n / 1e9, 2) + " M";
-    if (a >= 1e6) return "Rp" + fmtNum(n / 1e6, 1) + " jt";
+    const c = curSym();
+    if (a >= 1e12) return c + fmtNum(n / 1e12, 2) + " T";
+    if (a >= 1e9) return c + fmtNum(n / 1e9, 2) + " M";
+    if (a >= 1e6) return c + fmtNum(n / 1e6, 1) + " jt";
     return rp(n);
+  }
+  function tmLocal(epochSec, tz, withDay) {
+    if (!epochSec) return "—";
+    const d = new Date(epochSec * 1000);
+    const o = { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false };
+    if (withDay) { o.day = "numeric"; o.month = "short"; }
+    return d.toLocaleString("id-ID", o).replace(/\./g, ":");
+  }
+  function marketOpenNow(mk) {
+    const m = mk || M();
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: m.tz, weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(new Date());
+    const g = (t) => parts.find((p) => p.type === t)?.value;
+    const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(g("weekday"));
+    const mins = (Number(g("hour")) % 24) * 60 + Number(g("minute"));
+    if (!m.days.includes(wd)) return false;
+    return mins >= m.open[0] * 60 + m.open[1] && mins <= m.close[0] * 60 + m.close[1];
   }
   function pct(n, dec = 2) {
     if (n == null || Number.isNaN(Number(n))) return "—";
@@ -284,11 +348,55 @@
     return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
+  function wk(code) { return state.mkt === "id" ? code : `${state.mkt}:${code}`; }
+  function isWatched(code) { return state.watch.has(wk(code)); }
+  function M() { return MARKETS[state.mkt]; }
+
   function stockByCode(code) {
     return (state.market?.stocks || []).find((s) => s.code === code);
   }
   function isLiquid(s) {
-    return (s.value20 || 0) >= 2e9 && !String(s.board || "").toLowerCase().startsWith("pemantauan");
+    const min = state.market?.min_value_likuid || 2e9;
+    return (s.value20 || 0) >= min && !String(s.board || "").toLowerCase().startsWith("pemantauan");
+  }
+
+  // ---- Harga terbaru: live (CNBC) > quotes.json (Actions) > tutup harian (market.json) ----
+  function quoteOf(s) {
+    const mk = M();
+    const base = { price: s.price, chg_pct: s.chg_pct, t: s.quote_time || (s.date ? Date.parse(s.date + "T16:00:00+07:00") / 1000 : 0), src: "tutup harian", delay: null, daily: true };
+    let best = base;
+    const qm = state.quotes?.markets?.[state.mkt];
+    const q = qm?.q?.[s.code];
+    if (q && q[0] != null && q[2] && q[2] >= (best.t || 0)) {
+      best = { price: q[0], chg_pct: q[1], t: q[2], src: "Yahoo via GitHub Actions", delay: mk.delay, daily: false, high: q[4], low: q[5], prev: q[6] };
+    }
+    const lv = state.live[state.mkt]?.[s.code];
+    if (lv && lv.t && lv.t >= (best.t || 0)) best = { ...lv, daily: false };
+    return best;
+  }
+  function quoteStamp(qt) {
+    if (!qt || !qt.t) return "";
+    const mk = M();
+    const day = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: mk.tz });
+    const when = tmLocal(qt.t, mk.tz, day(qt.t * 1000) !== day(Date.now()));
+    return `${when} ${mk.tzl}`;
+  }
+  // Status zona beli: dibandingkan harga terbaru (bukan hanya tutup sinyal)
+  function zoneState(s, qt) {
+    if (s.signal !== "BELI" || s.entry_lo == null || s.entry_hi == null) return null;
+    const p = qt?.price ?? s.price;
+    if (s.sl != null && p <= s.sl) return { k: "batal", label: "Batal — tembus SL", cls: "jual" };
+    if (p > s.entry_hi) return { k: "lewat", label: "Lewat zona — jangan kejar", cls: "warn" };
+    if (p < s.entry_lo) return { k: "bawah", label: "Di bawah zona — cek ulang", cls: "thin" };
+    return { k: "zona", label: "Masih di zona beli", cls: "beli" };
+  }
+  function zoneLine(s, qt) {
+    const z = zoneState(s, qt);
+    if (!z) return "";
+    return `<div class="zone-line mt">
+      <div><span class="badge ${z.cls}">${z.label}</span> <span class="small faint">harga ${px(qt?.price ?? s.price)} · ${quoteStamp(qt)}</span></div>
+      <div class="small">Beli di bawah <strong>${px(s.entry_hi)}</strong> · area masuk <strong>${px(s.entry_lo)}–${px(s.entry_hi)}</strong> · SL <strong class="down">${px(s.sl)}</strong> · TP <strong class="up">${px(s.tp1)}</strong> / ${px(s.tp2)}</div>
+    </div>`;
   }
   function screenerScore(s) {
     const vol = Math.min(s.vol_ratio || 0, 5);
@@ -425,11 +533,39 @@
       stampEl.innerHTML = `<strong>Data gagal dimuat.</strong> ${escapeHtml(state.loadError)}`;
       return;
     }
-    if (!m) return;
-    const ihsg = m.ihsg;
-    stampEl.innerHTML = `Yahoo Finance · tutup BEI <strong>${parseDay(ihsg?.date || m.stocks?.[0]?.date)}</strong>
-      · diambil <strong>${parseDateTimeWib(m.fetched_at_wib)}</strong>
-      · ${fmtNum(m.counts?.yahoo_ok)}/${fmtNum(m.counts?.universe)} emiten`;
+    if (!m) { stampEl.textContent = state.loadingMarket ? `Lagi muat data ${M().short}…` : ""; return; }
+    stampEl.innerHTML = `<span class="stamp-live">${priceStampHtml()}</span><span class="faint">Sinyal dari candle tutup ${parseDay(m.ihsg?.date || m.stocks?.[0]?.date)} · data harian diambil ${parseDateTimeWib(m.fetched_at_wib)} · ${fmtNum(m.counts?.yahoo_ok)}/${fmtNum(m.counts?.universe)} saham</span>`;
+  }
+
+  function priceStampHtml() {
+    const mk = M();
+    const qm = state.quotes?.markets?.[state.mkt];
+    const lvAt = state.liveAt[state.mkt] || 0;
+    const open = marketOpenNow(mk);
+    let t = 0, srcTxt = "", delayTxt = "";
+    // waktu transaksi terakhir yang benar-benar ada di data
+    const lv = state.live[state.mkt] || {};
+    const lvTimes = Object.values(lv).map((x) => x.t || 0);
+    const lvMax = lvTimes.length ? Math.max(...lvTimes) : 0;
+    if (lvMax && lvMax >= (qm?.last_trade_epoch || 0)) {
+      t = lvMax; srcTxt = mk.id === "us" ? "CNBC langsung (Nasdaq last sale)" : "CNBC langsung";
+    } else if (qm?.last_trade_epoch) {
+      t = qm.last_trade_epoch; srcTxt = "Yahoo · update otomatis ~15 mnt";
+    } else if (state.market?.index?.date || state.market?.ihsg?.date) {
+      srcTxt = "harga tutup harian";
+    }
+    if (t) {
+      const age = Math.max(0, Math.round((Date.now() / 1000 - t) / 60));
+      delayTxt = open ? `(tertunda ~${age} menit)` : `(pasar tutup)`;
+      const fresh = open && age <= 20 ? "live" : "";
+      return `<span class="dot ${fresh}"></span>Harga per <strong>${tmLocal(t, mk.tz, !open || age > 600)} ${mk.tzl}</strong> ${delayTxt} · ${srcTxt}`;
+    }
+    return `Harga tutup <strong>${parseDay(state.market?.ihsg?.date)}</strong> · belum ada data harga intraday`;
+  }
+
+  function marketSwitch() {
+    return `<div class="mkt-switch" role="tablist" aria-label="Pilih pasar">${Object.values(MARKETS).map((mk) =>
+      `<button type="button" role="tab" data-mkt="${mk.id}" aria-selected="${state.mkt === mk.id}">${mk.flag} ${mk.short}</button>`).join("")}</div>`;
   }
 
   function disclaimer() {
@@ -440,7 +576,13 @@
     const m = state.market;
     const bt = state.backtest;
     const ihsg = m.ihsg;
+    const qIdx = state.quotes?.markets?.[state.mkt]?.index;
+    const idxDaily = ihsg?.date ? Date.parse(ihsg.date + "T00:00:00Z") / 1000 : 0;
+    const idxLive = qIdx && qIdx.t && qIdx.t > idxDaily ? qIdx : null;
+    const idxPrice = idxLive ? idxLive.price : ihsg?.price;
+    const idxChg = idxLive ? idxLive.chg_pct : ihsg?.chg_pct;
     const stocks = m.stocks || [];
+    const beliList = stocks.filter((s) => s.signal === "BELI" && isLiquid(s)).sort((a, b) => (b.value20 || 0) - (a.value20 || 0));
     const cands = stocks.filter((s) => s.screener).sort((a, b) => screenerScore(b) - screenerScore(a));
     const bandar = stocks.filter((s) => s.ikut_bandar).sort((a, b) => (b.vol_ratio || 0) - (a.vol_ratio || 0));
     const bandar1d = bt?.next_day?.E_ikut_bandar;
@@ -456,9 +598,9 @@
       <div class="card ihsg-card">
         <div class="ihsg">
           <div>
-            <div class="small faint">IHSG · ${parseDay(ihsg?.date)}</div>
-            <div class="px ${chgClass(ihsg?.chg_pct)}">${fmtNum(ihsg?.price, 2)}</div>
-            <div class="chg ${chgClass(ihsg?.chg_pct)}">${pct(ihsg?.chg_pct)}</div>
+            <div class="small faint">${escapeHtml(ihsg?.code || M().idxName)} · ${idxLive ? quoteStamp(idxLive) : parseDay(ihsg?.date)}</div>
+            <div class="px ${chgClass(idxChg)}">${fmtNum(idxPrice, 2)}</div>
+            <div class="chg ${chgClass(idxChg)}">${pct(idxChg)}</div>
             <div class="small muted mt">SMA20 ${fmtNum(ihsg?.sma20, 0)} · SMA50 ${fmtNum(ihsg?.sma50, 0)} · SMA200 ${fmtNum(ihsg?.sma200, 0)}</div>
           </div>
           ${sparkSvg(ihsg?.spark)}
@@ -469,6 +611,10 @@
         <div class="cell"><span class="lbl">Sinyal JUAL</span><span class="val" style="color:var(--down)">${fmtNum(jual)}</span></div>
         <div class="cell"><span class="lbl">Lolos penyaring</span><span class="val">${fmtNum(cands.length)}</span></div>
       </div>
+      <div class="sec-head"><h2>Sinyal BELI + area masuk<span>Zona dari candle harian (±ATR / order block), dicek ke harga terbaru</span></h2></div>
+      <div class="infobox">Harga gratis bisa tertunda, jadi tiap sinyal BELI punya <strong>area masuk</strong>. Kalau harga sekarang sudah di atas batas atas, statusnya <strong>“lewat zona”</strong> — jangan kejar. Di bawah SL = sinyal batal.</div>
+      ${beliList.length ? beliList.slice(0, 12).map((s) => stockCard(s)).join("") : `<div class="card empty">Belum ada sinyal BELI di saham likuid ${escapeHtml(M().short)} pada candle terakhir.</div>`}
+
       <div class="sec-head"><h2>Potensi naik kuat<span>Filter volume, breakout, tutup dekat high — bukan jaminan</span></h2></div>
       ${cands.length ? cands.map(stockCard).join("") : `<div class="card empty">Hari ini tidak ada saham likuid yang lolos filter penyaring. Coba buka tab Saham untuk lihat sinyal lain, atau tunggu data hari bursa berikutnya.</div>`}
 
@@ -508,6 +654,17 @@
         </div>
         <p class="small mt">Win rate di bawah 50% dan median negatif artinya aturan ini, di data 5 tahun, tidak unggul secara kasar. Dipakai sebagai kerangka, bukan mesin cuan.</p>
       </div>
+      ${bt?.trade_beli_zona ? `<div class="card">
+        <h3>Simulasi BELI hanya di area masuk</h3>
+        <p class="small muted">${escapeHtml(bt.trade_beli_zona.definisi || "")}</p>
+        <div class="stat-grid">
+          <div class="cell"><div class="lbl small faint">Trade masuk</div><div class="num">${fmtNum(bt.trade_beli_zona.n_trades)}</div></div>
+          <div class="cell"><div class="lbl small faint">Dilewati (lewat zona)</div><div class="num">${fmtNum(bt.trade_beli_zona.n_skip_lewat_zona)}</div></div>
+          <div class="cell"><div class="lbl small faint">Win rate</div><div class="num">${fmtNum(bt.trade_beli_zona.win_rate, 2)}%</div></div>
+          <div class="cell"><div class="lbl small faint">Median / rata-rata</div><div class="num">${fmtNum(bt.trade_beli_zona.median_pct, 2)}% / ${fmtNum(bt.trade_beli_zona.avg_pct, 2)}%</div></div>
+        </div>
+        <p class="small mt">Area masuk mencegah beli kemahalan setelah harga lari, tapi angka di atas menunjukkan itu <strong>bukan</strong> jaminan untung.</p>
+      </div>` : ""}
       <p class="small faint">Setup lain (volume spike saja, breakout+volume) ada di data/backtest.json — definisinya tertulis, angkanya dihitung, bukan dikarang.</p>
       ${disclaimer()}
     `;
@@ -526,27 +683,30 @@
   }
 
   function stockCard(s, { compact } = {}) {
+    const qt = quoteOf(s);
     const thin = s.thin ? `<span class="badge thin">kurang likuid</span>` : "";
     const mon = String(s.board || "").toLowerCase().startsWith("pemantauan") ? `<span class="badge warn">${escapeHtml(s.board)}</span>` : `<span class="badge board">${escapeHtml(s.board || "")}</span>`;
-    const star = state.watch.has(s.code) ? "★" : "";
+    const star = isWatched(s.code) ? "★" : "";
     return `<article class="card stock-card" data-open="${s.code}">
       <div class="stock">
         <div>
           <div class="code">${escapeHtml(s.code)} ${star} ${badgeSignal(s.signal)}</div>
         </div>
         <div class="right">
-          <div class="price">${fmtNum(s.price)}</div>
-          <div class="chg ${chgClass(s.chg_pct)}">${pct(s.chg_pct)}</div>
+          <div class="price">${px(qt.price)}</div>
+          <div class="chg ${chgClass(qt.chg_pct)}">${pct(qt.chg_pct)}</div>
+          <div class="qt-time">${quoteStamp(qt)}</div>
         </div>
         <div class="name">${escapeHtml(s.name)}</div>
       </div>
+      ${zoneLine(s, qt)}
       <div class="meta-line mt">
         ${mon} ${thin}
         ${s.ikut_bandar ? `<span class="badge bandar">Ikut Bandar</span>` : ""}
         ${s.ob_near === "bull" ? `<span class="badge beli">OB naik</span>` : s.ob_near === "bear" ? `<span class="badge jual">OB turun</span>` : ""}
         <span>Vol ${s.vol_ratio ? fmtNum(s.vol_ratio, 2) + "×" : "—"}</span>
         <span>RSI ${s.rsi14 ?? "—"}</span>
-        <span>1 lot ${rp(s.lot_cost)}</span>
+        <span>${M().lotWord} ${rp((qt.price || 0) * (s.lot || M().lot))}</span>
       </div>
       ${compact ? "" : `<div class="small muted mt">${(s.reasons || []).slice(0, 2).map(escapeHtml).join(" · ")}</div>`}
     </article>`;
@@ -568,11 +728,11 @@
     else if (f === "tunggu") list = list.filter((s) => s.signal === "TUNGGU");
     else if (f === "screener") list = list.filter((s) => s.screener);
     else if (f === "likuid") list = list.filter(isLiquid);
-    else if (f === "watch") list = list.filter((s) => state.watch.has(s.code));
+    else if (f === "watch") list = list.filter((s) => isWatched(s.code));
     else if (f === "bandar") list = list.filter((s) => s.ikut_bandar);
     else if (f === "dividen") list = list.filter((s) => (s.yield_ttm || 0) >= 4);
-    else if (f === "utama") list = list.filter((s) => s.board === "Utama");
-    if (state.watchOnly) list = list.filter((s) => state.watch.has(s.code));
+    else if (f === "utama") list = list.filter((s) => state.mkt === "id" ? s.board === "Utama" : /Nasdaq-100|Nikkei/.test(s.board || ""));
+    if (state.watchOnly) list = list.filter((s) => isWatched(s.code));
     list = [...list].sort((a, b) => (b.value || 0) - (a.value || 0));
     return list;
   }
@@ -589,13 +749,13 @@
       ["screener", "Penyaring"],
       ["likuid", "Likuid"],
       ["dividen", "Yield ≥4%"],
-      ["utama", "Papan utama"],
+      ["utama", state.mkt === "us" ? "Nasdaq-100" : state.mkt === "jp" ? "Nikkei 225" : "Papan utama"],
       ["watch", "Watchlist"],
       ["bandar", "Ikut Bandar"],
     ];
     return `
-      <div class="sec-head"><h2>${state.watchOnly ? "Watchlist" : "Cari saham"}<span>Sinyal BELI / TUNGGU / JUAL dari data Yahoo ${parseDay(state.market.ihsg?.date)}</span></h2></div>
-      <input class="search" id="q" type="search" placeholder="Cari kode atau nama emiten…" value="${escapeHtml(state.query)}" />
+      <div class="sec-head"><h2>${state.watchOnly ? "Watchlist" : "Cari saham"}<span>${escapeHtml(M().label)} · sinyal dari candle ${parseDay(state.market.ihsg?.date)}</span></h2></div>
+      <input class="search" id="q" type="search" placeholder="${state.mkt === "us" ? "Cari ticker / nama, mis. AAPL" : state.mkt === "jp" ? "Cari kode / nama, mis. 7203 Toyota" : "Cari kode atau nama emiten…"}" value="${escapeHtml(state.query)}" />
       <div class="filters" id="filters">
         ${filters.map(([id, lab]) => `<button type="button" data-f="${id}" aria-pressed="${state.sahamFilter === id}">${lab}</button>`).join("")}
       </div>
@@ -611,7 +771,9 @@
     if (!s) {
       return `<button class="back" data-back="saham">← Kembali</button><div class="card">Kode ${escapeHtml(code)} tidak ada di data yang berhasil diambil.</div>`;
     }
-    const watched = state.watch.has(s.code);
+    const watched = isWatched(s.code);
+    const qt = quoteOf(s);
+    const zs = zoneState(s, qt);
     const news = (state.news?.items || []).filter((n) => (n.tickers || []).includes(s.code));
     const araNote = s.tp1 && s.ara && s.tp1 > s.ara
       ? `<p class="small muted">TP1 (${fmtNum(s.tp1)}) di atas batas ARA perkiraan hari ini (${fmtNum(s.ara)}) — target itu biasanya butuh lebih dari satu sesi, dan bisa terhalang auto rejection.</p>`
@@ -626,12 +788,13 @@
             <div class="tags">${s.board ? `<span class="badge board">${escapeHtml(s.board)}</span>` : ""} ${s.thin ? `<span class="badge thin">kurang likuid</span>` : ""}</div>
           </div>
           <div class="right">
-            <div class="px ${chgClass(s.chg_pct)}" style="font-size:26px">${fmtNum(s.price)}</div>
-            <div class="chg ${chgClass(s.chg_pct)}">${pct(s.chg_pct)}</div>
+            <div class="px ${chgClass(qt.chg_pct)}" style="font-size:26px">${px(qt.price)}</div>
+            <div class="chg ${chgClass(qt.chg_pct)}">${pct(qt.chg_pct)}</div>
+            <div class="qt-time">${quoteStamp(qt)} · ${escapeHtml(qt.src)}</div>
           </div>
         </div>
         <div class="mt">${s.ohlc ? candleChart(s.ohlc, s.obs) : sparkSvg(s.spark, s.chg_pct >= 0 ? "#3dd68c" : "#f07178")}</div>
-        <p class="small faint">Candle ±80 hari · zona hijau = order block naik (demand), merah = OB turun (supply). Pudar = sudah termitigasi. Deteksi mekanis dari displacement, <strong>bukan</strong> antrian order/bandar. Data ${parseDay(s.date)} · Yahoo ${escapeHtml(s.code)}.JK</p>
+        <p class="small faint">Candle ±80 hari · zona hijau = order block naik (demand), merah = OB turun (supply). Pudar = sudah termitigasi. Deteksi mekanis dari displacement, <strong>bukan</strong> antrian order/bandar. Data ${parseDay(s.date)} · Yahoo ${escapeHtml(s.code)}${M().suffix}</p>
         <div class="mt">
           <button type="button" class="icon-btn ${watched ? "active" : ""}" data-toggle-watch="${s.code}">${watched ? "★ Di watchlist" : "☆ Tambah watchlist"}</button>
         </div>
@@ -641,20 +804,23 @@
         <div class="small faint">Kartu Sinyal · aturan mekanis, bukan saran</div>
         <p class="status ${escapeHtml(s.signal)}">${escapeHtml(s.signal)}</p>
         <p class="small muted">${s.signal_kind === "breakout" ? "Setup breakout bervolume" : s.signal_kind === "retest" ? "Setup retest support di tren naik" : s.signal_kind === "breakdown" ? "Setup keluar / breakdown" : "Belum ada setup masuk/keluar yang terpenuhi"}</p>
+        ${zs ? `<p class="mt"><span class="badge ${zs.cls}">${zs.label}</span> <span class="small faint">harga ${px(qt.price)} · ${quoteStamp(qt)}</span></p>` : ""}
         <div class="kv three mt">
-          <div class="cell"><span class="lbl">Zona entry</span><span class="val">${fmtNum(s.entry_lo)} – ${fmtNum(s.entry_hi)}</span></div>
-          <div class="cell"><span class="lbl">Stop loss</span><span class="val">${fmtNum(s.sl)}</span></div>
-          <div class="cell"><span class="lbl">TP1 / TP2</span><span class="val">${fmtNum(s.tp1)} / ${fmtNum(s.tp2)}</span></div>
+          <div class="cell"><span class="lbl">${s.signal === "BELI" ? "Beli di bawah" : "Batas atas zona"}</span><span class="val">${px(s.entry_hi)}</span></div>
+          <div class="cell"><span class="lbl">Area masuk</span><span class="val">${px(s.entry_lo)} – ${px(s.entry_hi)}</span></div>
+          <div class="cell"><span class="lbl">Stop loss</span><span class="val">${px(s.sl)}</span></div>
+          <div class="cell"><span class="lbl">TP1 / TP2</span><span class="val">${px(s.tp1)} / ${px(s.tp2)}</span></div>
         </div>
+        <p class="small faint">Zona: ${escapeHtml(s.zone_basis || "tutup sinyal ± ATR14")}. Dihitung dari candle harian ${parseDay(s.date)} (tutup ${px(s.price)}), jadi tetap berlaku walau harga live tertunda. Di atas batas atas = lewat zona, jangan kejar.</p>
         ${araNote}
         <ul class="reasons">${(s.reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>
-        <p class="small faint mt">Entry/SL/TP dibulatkan ke fraksi BEI. Win rate aturan ini di sejarah 5 tahun ada di Beranda — baca sebelum ikut angka di kartu ini.</p>
+        <p class="small faint mt">Entry/SL/TP dibulatkan ke fraksi harga ${state.mkt === "id" ? "BEI" : state.mkt === "jp" ? "TSE (tabel standar)" : "US$0,01"}. Win rate aturan ini di sejarah 5 tahun ada di Beranda — baca sebelum ikut angka di kartu ini.</p>
       </div>
 
       <div class="card">
         <h3>Ringkasan pasar</h3>
         <div class="kv">
-          <div class="cell"><span class="lbl">Open · High · Low</span><span class="val">${fmtNum(s.open)} · ${fmtNum(s.high)} · ${fmtNum(s.low)}</span></div>
+          <div class="cell"><span class="lbl">Open · High · Low</span><span class="val">${px(s.open)} · ${px(s.high)} · ${px(s.low)}</span></div>
           <div class="cell"><span class="lbl">Volume · nilai</span><span class="val">${fmtNum(s.volume)} · ${rpCompact(s.value)}</span></div>
           <div class="cell"><span class="lbl">SMA20 · 50 · 200</span><span class="val">${fmtNum(s.sma20)} · ${fmtNum(s.sma50)} · ${fmtNum(s.sma200)}</span></div>
           <div class="cell"><span class="lbl">RSI14 · ATR14 · vol 20h</span><span class="val">${s.rsi14 ?? "—"} · ${fmtNum(s.atr14, 1)} · ${s.vol_ratio ? fmtNum(s.vol_ratio, 2) + "×" : "—"}</span></div>
@@ -697,17 +863,18 @@
       <div class="card">
         <h3>Kalkulator dividen</h3>
         <div class="form">
-          <label>Kode emiten<input id="calc-code" list="calc-codes" value="${escapeHtml(state.calc.code)}" placeholder="Contoh: BBCA" autocomplete="off" /><datalist id="calc-codes">${codes}</datalist></label>
-          <label>Jumlah lot<input id="calc-lots" type="number" min="1" step="1" value="${escapeHtml(state.calc.lots)}" /></label>
+          <label>Kode emiten<input id="calc-code" list="calc-codes" value="${escapeHtml(state.calc.code)}" placeholder="${state.mkt === "us" ? "Contoh: KO" : state.mkt === "jp" ? "Contoh: 7203" : "Contoh: BBCA"}" autocomplete="off" /><datalist id="calc-codes">${codes}</datalist></label>
+          <label>${state.mkt === "us" ? "Jumlah saham" : state.mkt === "jp" ? "Jumlah unit (100 lbr)" : "Jumlah lot"}<input id="calc-lots" type="number" min="1" step="1" value="${escapeHtml(state.calc.lots)}" /></label>
           <label>Harga per lembar (kosongkan = harga terakhir)<input id="calc-price" type="number" min="0" step="1" value="${escapeHtml(state.calc.price)}" placeholder="${c.priceHint || ""}" /></label>
           <label>Dividen per lembar / DPS (kosongkan = DPS TTM)<input id="calc-dps" type="number" min="0" step="0.01" value="${escapeHtml(state.calc.dps)}" placeholder="${c.dpsHint || ""}" /></label>
-          <label class="toggle"><input id="calc-reinvest" type="checkbox" ${state.calc.reinvest ? "checked" : ""} /> Saya reinvest sesuai aturan (lihat catatan pajak)</label>
+          ${state.mkt !== "id" ? `<p class="small muted">Asumsi pajak: kamu residen Jepang, rekening biasa (bukan NISA). Saham Jepang: 20,315% dipotong. Saham AS: dipotong 10% di AS (treaty) lalu 20,315% di Jepang (bisa klaim kredit pajak luar negeri di SPT). Perkiraan, bukan nasihat pajak.</p>` : ""}
+          <label class="toggle" ${state.mkt !== "id" ? "hidden" : ""}><input id="calc-reinvest" type="checkbox" ${state.calc.reinvest ? "checked" : ""} /> Saya reinvest sesuai aturan (lihat catatan pajak)</label>
         </div>
         <div class="kv three mt">
           <div class="cell"><span class="lbl">Modal (tanpa biaya broker)</span><span class="val">${rp(c.modal)}</span></div>
-          <div class="cell"><span class="lbl">Dividen kotor</span><span class="val">${rp(c.kotor, 0)}</span></div>
-          <div class="cell"><span class="lbl">${c.reinvest ? "Pajak (diasumsikan 0)" : "PPh 10% final"}</span><span class="val">${rp(c.pajak, 0)}</span></div>
-          <div class="cell"><span class="lbl">Dividen bersih</span><span class="val">${rp(c.bersih, 0)}</span></div>
+          <div class="cell"><span class="lbl">Dividen kotor</span><span class="val">${rp(c.kotor)}</span></div>
+          <div class="cell"><span class="lbl">${state.mkt === "jp" ? "Pajak Jepang 20,315%" : state.mkt === "us" ? "Pajak ±28,3% (AS 10% + Jepang)" : c.reinvest ? "Pajak (diasumsikan 0)" : "PPh 10% final"}</span><span class="val">${rp(c.pajak)}</span></div>
+          <div class="cell"><span class="lbl">Dividen bersih</span><span class="val">${rp(c.bersih)}</span></div>
           <div class="cell"><span class="lbl">Yield kotor / bersih</span><span class="val">${fmtNum(c.yieldKotor, 2)}% / ${fmtNum(c.yieldBersih, 2)}%</span></div>
           <div class="cell"><span class="lbl">Lembar</span><span class="val">${fmtNum(c.lembar)}</span></div>
         </div>
@@ -715,10 +882,10 @@
           <div class="lbl">Kapan harus beli</div>
           <p>Supaya dapat dividen, kamu harus sudah beli paling lambat di <strong>cum date</strong>. Karena settlement T+2, beli di cum date (pasar reguler) biasanya masih sempat masuk pencatatan. Beli mulai <strong>ex date</strong> = tidak dapat dividen tersebut. Kalau hanya ada ex-date Yahoo, cum perkiraan = hari bursa sebelumnya — cek pengumuman resmi emiten/KSEI sebelum bertindak.</p>
         </div>
-        <p class="small muted"><strong>Pajak (WP orang pribadi dalam negeri, aturan yang berlaku). </strong>Dividen dalam negeri bisa dikecualikan dari objek PPh jika diinvestasikan lagi di Indonesia dalam jangka waktu tertentu (paling lambat 31 Maret tahun berikutnya, dipegang minimal 3 tahun pajak, plus laporan realisasi dan SPT) — UU Cipta Kerja / UU HPP jo. PMK-18/PMK.03/2021. Kalau syarat itu tidak dipenuhi, terutang <strong>PPh final 10%</strong> (disetor sendiri). Ini ringkasan, bukan nasihat pajak. Non-residen beda aturannya.</p>
+        <p class="small muted" ${state.mkt !== "id" ? "hidden" : ""}><strong>Pajak (WP orang pribadi dalam negeri, aturan yang berlaku). </strong>Dividen dalam negeri bisa dikecualikan dari objek PPh jika diinvestasikan lagi di Indonesia dalam jangka waktu tertentu (paling lambat 31 Maret tahun berikutnya, dipegang minimal 3 tahun pajak, plus laporan realisasi dan SPT) — UU Cipta Kerja / UU HPP jo. PMK-18/PMK.03/2021. Kalau syarat itu tidak dipenuhi, terutang <strong>PPh final 10%</strong> (disetor sendiri). Ini ringkasan, bukan nasihat pajak. Non-residen beda aturannya.</p>
       </div>
 
-      <div class="sec-head"><h2>Daftar yield${good.length ? " likuid ≥ 4%" : ""}<span>${good.length ? "Filter: yield TTM ≥ 4% dan rata-rata nilai 20 hari ≥ Rp2 miliar, bukan papan pemantauan" : "Tidak ada yang lolos filter ketat; menampilkan yang likuid ber-dividen"}</span></h2></div>
+      <div class="sec-head"><h2>Daftar yield${good.length ? " likuid ≥ 4%" : ""}<span>${good.length ? `Filter: yield TTM ≥ 4% dan rata-rata nilai 20 hari ≥ ${escapeHtml(state.market.min_value_label || "Rp2 miliar")}` : "Tidak ada yang lolos filter ketat; menampilkan yang likuid ber-dividen"}</span></h2></div>
       ${shown.length ? `<p class="hint tight">Menampilkan ${fmtNum(shownN)} yield tertinggi dari ${fmtNum(show.length)} yang lolos filter. Ketuk kartu untuk riwayat DPS.</p>` : ""}
       ${shown.map((s) => `
         <article class="card stock-card" data-open="${s.code}">
@@ -732,7 +899,7 @@
               <div class="small muted">yield TTM</div>
             </div>
           </div>
-          <div class="small muted mt">DPS 12bln ${fmtNum(s.dps_ttm, 2)} · harga ${fmtNum(s.price)} · ex terakhir ${parseDay(s.last_ex)}${s.last_cum_perkiraan ? ` · cum perkiraan ${parseDay(s.last_cum_perkiraan)}` : ""} · 1 lot ${rp(s.lot_cost)}</div>
+          <div class="small muted mt">DPS 12bln ${fmtNum(s.dps_ttm, 2)} · harga ${px(s.price)} · ex terakhir ${parseDay(s.last_ex)}${s.last_cum_perkiraan ? ` · cum perkiraan ${parseDay(s.last_cum_perkiraan)}` : ""} · ${M().lotWord} ${rp(s.lot_cost)}</div>
           ${s.next_div_perkiraan ? `<div class="small faint">Perkiraan ex berikutnya ~ ${parseDay(s.next_div_perkiraan.ex_perkiraan)} (pola lama, bukan resmi)</div>` : ""}
         </article>`).join("")}
       <p class="small faint">Yield tinggi bisa karena harga sedang jatuh atau ada special dividend. Cek riwayat DPS di halaman saham.</p>
@@ -750,11 +917,12 @@
     const dps = state.calc.dps === "" || state.calc.dps == null
       ? (s && s.dps_ttm != null ? s.dps_ttm : (s?.last_dps || 0))
       : Number(state.calc.dps);
-    const lembar = lots * 100;
+    const lembar = lots * (state.mkt === "us" ? 1 : 100);
     const modal = lembar * (Number(price) || 0);
     const kotor = lembar * (Number(dps) || 0);
     const reinvest = !!state.calc.reinvest;
-    const pajak = reinvest ? 0 : 0.1 * kotor;
+    const taxRate = state.mkt === "id" ? (reinvest ? 0 : 0.1) : state.mkt === "jp" ? 0.20315 : 1 - 0.9 * (1 - 0.20315);
+    const pajak = taxRate * kotor;
     const bersih = kotor - pajak;
     const yieldKotor = modal ? (kotor / modal) * 100 : 0;
     const yieldBersih = modal ? (bersih / modal) * 100 : 0;
@@ -899,11 +1067,12 @@
     stampRender();
     saveWatch();
     if (state.loadError && !state.market) {
-      appEl.innerHTML = renderError();
+      appEl.innerHTML = marketSwitch() + renderError();
+      bind();
       return;
     }
     if (!state.market) {
-      appEl.innerHTML = `<p class="hint">Lagi muat data…</p>`;
+      appEl.innerHTML = marketSwitch() + (state.loadError ? renderError() : `<p class="hint">Lagi muat data ${escapeHtml(M().label)}…</p>`);
       return;
     }
     const fn = {
@@ -914,7 +1083,10 @@
       metode: renderMetode,
       berita: renderBerita,
     }[state.tab] || renderBeranda;
-    appEl.innerHTML = fn();
+    const dataTab = ["beranda", "saham", "dividen"].includes(state.tab);
+    const newsNote = state.tab === "berita" && state.mkt !== "id"
+      ? `<div class="infobox">Berita RSS saat ini hanya untuk pasar Indonesia (CNBC Indonesia, Kontan, IDX Channel). Untuk ${escapeHtml(M().short)}, belum ada sumber RSS gratis yang dipasang — tidak dikarang.</div>` : "";
+    appEl.innerHTML = (dataTab || state.tab === "berita" ? marketSwitch() : "") + newsNote + fn();
     bind();
   }
 
@@ -960,6 +1132,8 @@
       else go({ tab: t });
       return;
     }
+    const mb = e.target.closest("[data-mkt]");
+    if (mb) { switchMarket(mb.dataset.mkt); return; }
     const f = e.target.closest("[data-f]");
     if (f) { state.sahamFilter = f.dataset.f; state.watchOnly = f.dataset.f === "watch"; render(); return; }
     const mcat = e.target.closest("[data-mcat]");
@@ -975,7 +1149,8 @@
     const tw = e.target.closest("[data-toggle-watch]");
     if (tw) {
       const c = tw.dataset.toggleWatch;
-      if (state.watch.has(c)) state.watch.delete(c); else state.watch.add(c);
+      const key = wk(c);
+      if (state.watch.has(key)) state.watch.delete(key); else state.watch.add(key);
       saveWatch();
       render();
       return;
@@ -1056,10 +1231,143 @@
 
   window.addEventListener("hashchange", () => { if (state.user) { readHash(); render(); window.scrollTo(0, 0); } });
 
-  async function loadJson(path) {
-    const res = await fetch(path, { cache: "no-cache" });
+  async function loadJson(path, opts) {
+    const res = await fetch(path, { cache: "no-cache", ...(opts || {}) });
     if (!res.ok) throw new Error(`${path} HTTP ${res.status}`);
     return res.json();
+  }
+  function rawUrl(file) {
+    return `https://raw.githubusercontent.com/${REMOTE.owner}/${REMOTE.repo}/${REMOTE.branch}/${file}`;
+  }
+  // Data online (branch data) dulu; kalau belum ada / gagal, pakai snapshot data/ di situs.
+  async function loadData(file) {
+    if (REMOTE) {
+      try { return await loadJson(rawUrl(file)); } catch (_) { /* fallback */ }
+    }
+    return loadJson("data/" + file);
+  }
+  async function loadQuotes() {
+    const tries = [];
+    if (REMOTE) {
+      // api.github.com: cache 60 dtk (lebih segar dari raw yang 5 mnt). Batas 60 request/jam per IP.
+      tries.push(["api", () => loadJson(`https://api.github.com/repos/${REMOTE.owner}/${REMOTE.repo}/contents/quotes.json?ref=${REMOTE.branch}`, { headers: { Accept: "application/vnd.github.raw+json" } })]);
+      tries.push(["raw", () => loadJson(rawUrl("quotes.json"))]);
+    }
+    tries.push(["lokal", () => loadJson("data/quotes.json")]);
+    for (const [name, fn] of tries) {
+      try {
+        const q = await fn();
+        if (q && q.markets) {
+          // jangan mundur ke data yang lebih lama
+          if (!state.quotes || (q.generated_at_utc || "") >= (state.quotes.generated_at_utc || "")) {
+            state.quotes = q; state.quotesFrom = name;
+          }
+          return true;
+        }
+      } catch (_) { /* coba sumber berikutnya */ }
+    }
+    return false;
+  }
+  // AS & Jepang: CNBC quote API mengirim CORS terbuka, tanpa kunci (tidak resmi — kalau gagal, diam saja).
+  function cnbcSymbol(code) { return state.mkt === "jp" ? `${code}.T` : code; }
+  function parseCnbcTime(x) {
+    if (!x) return 0;
+    const t = Date.parse(String(x).replace(/([+-]\d{2})(\d{2})$/, "$1:$2"));
+    return Number.isNaN(t) ? 0 : Math.floor(t / 1000);
+  }
+  async function pollLive() {
+    const mid = state.mkt;
+    if (mid === "id" || !state.market || document.hidden) return;
+    if (!marketOpenNow(MARKETS[mid]) && state.liveAt[mid]) return;
+    const codes = (state.market.stocks || []).map((s) => s.code);
+    const out = {};
+    for (let i = 0; i < codes.length; i += 100) {
+      const chunk = codes.slice(i, i + 100);
+      const url = "https://quote.cnbc.com/quote-html-webservice/restQuote/symbolType/symbol?symbols=" +
+        encodeURIComponent(chunk.map(cnbcSymbol).join("|")) + "&requestMethod=itv&noform=1&partnerId=2&fund=1&exthrs=0&output=json";
+      try {
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) continue;
+        const j = await res.json();
+        let arr = j?.FormattedQuoteResult?.FormattedQuote || [];
+        if (!Array.isArray(arr)) arr = [arr];
+        for (const r of arr) {
+          if (r.code !== 0 || !r.last) continue;
+          const price = Number(String(r.last).replace(/,/g, ""));
+          const t = parseCnbcTime(r.last_time);
+          if (!price || !t) continue;
+          const code = mid === "jp" ? String(r.symbol).replace(/\.T$/, "") : r.symbol;
+          const cp = Number(String(r.change_pct || "").replace(/[%,+]/g, ""));
+          out[code] = { price, chg_pct: Number.isNaN(cp) ? null : cp, t, src: mid === "us" ? "CNBC real-time" : "CNBC (tertunda ±20 mnt)", delay: MARKETS[mid].delay };
+        }
+      } catch (_) { /* jaringan / CORS — pakai quotes.json */ }
+    }
+    if (Object.keys(out).length && state.mkt === mid) {
+      state.live[mid] = out;
+      state.liveAt[mid] = Date.now();
+      softRender();
+    }
+  }
+  function softRender() {
+    // re-render tanpa mengganggu ketikan di kolom cari
+    const a = document.activeElement;
+    if (a && (a.id === "q" || a.id === "nq" || (a.id || "").startsWith("calc-"))) { stampRender(); return; }
+    if (state.user) render();
+  }
+  async function loadMarket(mid) {
+    const mk = MARKETS[mid];
+    if (state.data[mid]?.market) return state.data[mid];
+    const [market, backtest] = await Promise.all([loadData(mk.file), loadData(mk.bt)]);
+    state.data[mid] = { market, backtest, loadedAt: Date.now() };
+    return state.data[mid];
+  }
+  async function switchMarket(mid) {
+    if (!MARKETS[mid]) return;
+    state.mkt = mid;
+    try { localStorage.setItem(MARKET_KEY, mid); } catch (_) {}
+    state.selected = null;
+    state.query = "";
+    state.calc.code = "";
+    state.loadError = null;
+    const cached = state.data[mid];
+    state.market = cached?.market || null;
+    state.backtest = cached?.backtest || null;
+    state.loadingMarket = !cached;
+    render();
+    if (!cached) {
+      try {
+        const d = await loadMarket(mid);
+        if (state.mkt !== mid) return;
+        state.market = d.market; state.backtest = d.backtest;
+      } catch (err) {
+        state.loadError = `Data ${mk_label(mid)} belum tersedia (${String(err.message || err)}). Tunggu jadwal update otomatis pertama.`;
+      }
+      state.loadingMarket = false;
+      render();
+    }
+    pollLive();
+  }
+  function mk_label(mid) { return MARKETS[mid]?.label || mid; }
+  async function refreshMarketIfNew() {
+    const mid = state.mkt;
+    try {
+      const mk = MARKETS[mid];
+      const fresh = await loadData(mk.file);
+      if (fresh?.fetched_at_wib && fresh.fetched_at_wib !== state.data[mid]?.market?.fetched_at_wib) {
+        const backtest = await loadData(mk.bt).catch(() => state.data[mid]?.backtest);
+        state.data[mid] = { market: fresh, backtest, loadedAt: Date.now() };
+        if (state.mkt === mid) { state.market = fresh; state.backtest = backtest; softRender(); }
+      }
+    } catch (_) {}
+  }
+  function startAutoRefresh() {
+    setInterval(() => { if (!document.hidden) loadQuotes().then((ok) => ok && softRender()); }, QUOTES_EVERY_MS);
+    setInterval(() => { if (!document.hidden) pollLive(); }, LIVE_EVERY_MS);
+    setInterval(() => { if (!document.hidden) refreshMarketIfNew(); }, MARKET_EVERY_MS);
+    setInterval(() => { if (!document.hidden) stampRender(); }, 30 * 1000);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) { loadQuotes().then(() => softRender()); pollLive(); }
+    });
   }
 
   function hookServiceWorker(reg) {
@@ -1089,17 +1397,19 @@
       renderAuth();
     }
     try {
-      const [market, backtest, news] = await Promise.all([
-        loadJson("data/market.json"),
-        loadJson("data/backtest.json"),
-        loadJson("data/news.json"),
+      const [d, news] = await Promise.all([
+        loadMarket(state.mkt),
+        loadData("news.json").catch(() => null),
+        loadQuotes(),
       ]);
-      state.market = market;
-      state.backtest = backtest;
+      state.market = d.market;
+      state.backtest = d.backtest;
       state.news = news;
     } catch (err) {
       state.loadError = String(err.message || err);
     }
+    startAutoRefresh();
+    pollLive();
     if (state.user) {
       navRender();
       saveWatch();

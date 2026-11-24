@@ -327,3 +327,19 @@ footer.disc { font-size: 11px; color: var(--faint); margin: 18px 0 8px; line-hei
 }
 
 [hidden] { display: none !important; }
+
+/* --- Pasar (IDX / AS / Jepang) + harga live + zona beli --- */
+.mkt-switch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 4px 0 12px; padding: 4px; border: 1px solid var(--line-dim); border-radius: 14px; background: rgba(10, 18, 34, .7); }
+.mkt-switch button { appearance: none; border: 1px solid transparent; background: transparent; color: var(--muted); font: 600 13px/1.2 var(--sans); padding: 9px 4px; border-radius: 10px; cursor: pointer; white-space: nowrap; }
+.mkt-switch button[aria-selected="true"] { color: #fff; background: linear-gradient(180deg, rgba(59,130,246,.45), rgba(29,78,216,.45)); border-color: var(--accent); }
+.stamp .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); margin-right: 6px; vertical-align: 1px; }
+.stamp .dot.live { background: var(--up); box-shadow: 0 0 0 3px rgba(61,214,140,.18); }
+.stamp .faint { color: var(--faint); font-size: 11px; }
+.qt-time { font-size: 11px; color: var(--faint); white-space: nowrap; }
+.zone-line { border-top: 1px dashed var(--line-dim); padding-top: 8px; display: grid; gap: 4px; }
+.zone-line .small { line-height: 1.45; }
+.up { color: var(--up); }
+.down { color: var(--down); }
+.stamp .stamp-live { display: block; width: 100%; font-size: 12.5px; color: var(--accent-2); }
+.stamp .stamp-live strong { color: #fff; }
+.stamp > .faint { display: block; width: 100%; }

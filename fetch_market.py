@@ -32,7 +32,8 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
+SRC_DATA = ROOT / "data"  # universe*.csv (input)
+DATA = ROOT / "data"  # output JSON (bisa diganti --out)
 CACHE = DATA / "cache"
 WIB = dt.timezone(dt.timedelta(hours=7))
 JST = dt.timezone(dt.timedelta(hours=9))
@@ -44,6 +45,53 @@ RETRIES = 4
 MIN_VALUE_LIQUID = 2_000_000_000  # Rp 2 miliar, rata-rata 20 hari
 VOL_SPIKE = 1.8
 NEAR_HIGH = 0.80
+
+# ---- Pasar yang didukung -------------------------------------------------
+# id = Bursa Efek Indonesia, us = S&P 500 + Nasdaq-100, jp = Nikkei 225.
+# Delay = keterlambatan sumber gratis (Yahoo) yang dicatat jujur di app.
+MARKETS: dict[str, dict] = {
+    "id": {
+        "id": "id", "label": "Indonesia (BEI)", "universe": "universe.csv",
+        "suffix": ".JK", "index": ("IHSG", "^JKSE"), "currency": "IDR",
+        "min_value": 2_000_000_000, "min_label": "Rp2 miliar", "lot": 100,
+        "tz": "Asia/Jakarta", "tz_label": "WIB", "open": (9, 0), "close": (16, 15),
+        "delay_min": 10, "market_file": "market.json", "backtest_file": "backtest.json",
+        "cache": "cache",
+    },
+    "us": {
+        "id": "us", "label": "Amerika (S&P 500 + Nasdaq-100)", "universe": "universe_us.csv",
+        "suffix": "", "index": ("S&P 500", "^GSPC"), "currency": "USD",
+        "min_value": 20_000_000, "min_label": "US$20 juta", "lot": 1,
+        "tz": "America/New_York", "tz_label": "ET", "open": (9, 30), "close": (16, 15),
+        "delay_min": 0, "market_file": "market_us.json", "backtest_file": "backtest_us.json",
+        "cache": "cache_us",
+    },
+    "jp": {
+        "id": "jp", "label": "Jepang (Nikkei 225)", "universe": "universe_jp.csv",
+        "suffix": ".T", "index": ("Nikkei 225", "^N225"), "currency": "JPY",
+        "min_value": 1_000_000_000, "min_label": "¥1 miliar", "lot": 100,
+        "tz": "Asia/Tokyo", "tz_label": "JST", "open": (9, 0), "close": (15, 45),
+        "delay_min": 20, "market_file": "market_jp.json", "backtest_file": "backtest_jp.json",
+        "cache": "cache_jp",
+    },
+}
+MKT: dict = MARKETS["id"]
+
+
+def set_market(mid: str) -> dict:
+    """Pasang konfigurasi pasar aktif (dipakai fungsi sinyal/backtest)."""
+    global MKT, MIN_VALUE_LIQUID, CACHE
+    MKT = MARKETS[mid]
+    MIN_VALUE_LIQUID = MKT["min_value"]
+    CACHE = Path(os.environ.get("INVESTING_CACHE") or (SRC_DATA)) / MKT["cache"]
+    return MKT
+
+
+def yahoo_symbol(code: str, mkt: dict | None = None) -> str:
+    m = mkt or MKT
+    if m["id"] == "us":
+        return code.replace(".", "-")
+    return f"{code}{m['suffix']}"
 
 RSS_FEEDS = [
     {
@@ -100,7 +148,7 @@ def fetch_bytes(url: str, retries: int = RETRIES) -> bytes:
 
 
 def load_universe() -> list[dict]:
-    path = DATA / "universe.csv"
+    path = SRC_DATA / MKT["universe"]
     rows = []
     with path.open(encoding="utf-8") as f:
         for r in csv.DictReader(f):
@@ -119,12 +167,21 @@ def load_universe() -> list[dict]:
                     "board": (r.get("board") or "").strip(),
                     "shares": shares_f,
                     "listed": (r.get("listed") or "").strip(),
+                    "sector": (r.get("sector") or "").strip(),
                 }
             )
     return rows
 
 
-def tick_size(price: float) -> int:
+def tick_size(price: float) -> float:
+    if MKT["id"] == "us":
+        return 0.01
+    if MKT["id"] == "jp":
+        # tabel fraksi standar TSE (saham TOPIX100 bisa lebih halus; ini tetap kelipatan valid)
+        for lim, t in ((3000, 1), (5000, 5), (30000, 10), (50000, 50), (300000, 100)):
+            if price <= lim:
+                return t
+        return 1000
     if price < 200:
         return 1
     if price < 500:
@@ -141,8 +198,10 @@ def round_tick(price: float, up: bool = False) -> float:
         return 0.0
     t = tick_size(price)
     if up:
-        return float(math.ceil(price / t) * t)
-    return float(math.floor(price / t) * t)
+        v = math.ceil(round(price / t, 6)) * t
+    else:
+        v = math.floor(round(price / t, 6)) * t
+    return float(round(v, 2))
 
 
 def ara_arb(prev: float) -> dict:
@@ -160,7 +219,9 @@ def ara_arb(prev: float) -> dict:
     return {"ara_pct": 0.20, "arb_pct": 0.07, "ara_rp": None, "arb_rp": None, "note": ">Rp5.000: ARA 20%, ARB 7%"}
 
 
-def ara_price(prev: float) -> float:
+def ara_price(prev: float) -> float | None:
+    if MKT["id"] != "id":
+        return None  # AS tanpa batas harian; batas harian TSE tidak dihitung di sini
     b = ara_arb(prev)
     if b["ara_rp"] is not None:
         return round_tick(prev + b["ara_rp"], up=True)
@@ -266,6 +327,16 @@ def parse_chart(payload: dict, code: str) -> dict | None:
     n = min(len(ts), len(o), len(h), len(l), len(c), len(v))
     if n < 5:
         return None
+    # Bar terakhir kadang close=None (mis. TSE di Yahoo) padahal harga resmi ada di meta.
+    rmp, rmt = meta.get("regularMarketPrice"), meta.get("regularMarketTime")
+    if c[n - 1] is None and rmp and rmt and ts[n - 1] <= rmt < ts[n - 1] + 86400:
+        c[n - 1] = float(rmp)
+        if h[n - 1] is None:
+            h[n - 1] = meta.get("regularMarketDayHigh") or float(rmp)
+        if l[n - 1] is None:
+            l[n - 1] = meta.get("regularMarketDayLow") or float(rmp)
+        if v[n - 1] is None:
+            v[n - 1] = float(meta.get("regularMarketVolume") or 0)
     ts, o, h, l, c, v = ts[:n], o[:n], h[:n], l[:n], c[:n], v[:n]
     # drop bars that are completely empty
     keep = [i for i in range(n) if c[i] is not None and h[i] is not None and l[i] is not None]
@@ -727,9 +798,9 @@ def classify_signal(ind: dict, rsi: float | None, atr: float | None) -> dict:
     if ind["gap"] is not None and ind["gap"] >= 0.02:
         reasons.append(f"Gap naik {ind['gap']*100:.1f}% di pembukaan")
     if thin:
-        reasons.append("Likuiditas 20 hari di bawah Rp2 miliar — hati-hati selisih harga")
+        reasons.append(f"Likuiditas 20 hari di bawah {MKT['min_label']} — hati-hati selisih harga")
 
-    # rencana entry/SL/TP
+    # rencana entry/SL/TP — dari data harian, tetap berlaku walau harga live tertunda
     entry = close
     if kind == "breakout" and high20:
         sl = round_tick(min(ind["low"], high20 * 0.97, close - (atr or close * 0.03)))
@@ -739,18 +810,27 @@ def classify_signal(ind: dict, rsi: float | None, atr: float | None) -> dict:
         sl = round_tick(close - (atr * 1.5 if atr else close * 0.04))
     if sl <= 0 or sl >= close:
         sl = round_tick(close * 0.96)
-    risk = close - sl
-    tp1 = round_tick(close + 1.5 * risk, up=True)
-    tp2 = round_tick(close + 3.0 * risk, up=True)
-    # jangan janji TP di atas ARA sehari
     if ind["prev"]:
         ara = ara_price(ind["prev"])
     else:
         ara = ara_price(close)
-    entry_lo = round_tick(close * 0.995)
-    entry_hi = round_tick(min(close * 1.01, ara), up=True)
-    if entry_hi < entry_lo:
+    # Area masuk: harga sinyal (tutup) − 0,5×ATR s/d + 0,25×ATR.
+    # Di atas entry_hi = "lewat zona" (jangan kejar). Di bawah SL = batal.
+    a = atr if (atr and atr > 0) else close * 0.03
+    entry_lo = round_tick(close - 0.5 * a)
+    entry_hi = round_tick(close + 0.25 * a, up=True)
+    if ara is not None and entry_hi > ara:
+        entry_hi = round_tick(ara)
+    if entry_hi < close:
         entry_hi = round_tick(close, up=True)
+    if entry_lo <= sl:
+        entry_lo = round_tick(sl + (close - sl) * 0.5, up=True)
+    if entry_lo > close:
+        entry_lo = round_tick(close)
+    entry_mid = (entry_lo + entry_hi) / 2
+    risk = max(entry_mid - sl, close * 0.005)
+    tp1 = round_tick(entry_mid + 1.5 * risk, up=True)
+    tp2 = round_tick(entry_mid + 3.0 * risk, up=True)
 
     return {
         "status": status,
@@ -763,6 +843,7 @@ def classify_signal(ind: dict, rsi: float | None, atr: float | None) -> dict:
         "tp2": tp2,
         "risk": risk,
         "ara": ara,
+        "zone_basis": "tutup sinyal −0,5×ATR14 s/d +0,25×ATR14",
         "thin": thin,
         "breakout": bool(breakout),
         "retest": bool(retest),
@@ -824,7 +905,6 @@ def estimate_next_div(divs: list[dict], last_date: str) -> dict | None:
     cands = []
     for d in divs:
         ex = dt.date.fromisoformat(d["ex"])
-        guess = ex.replace(year=last.year) if ex.month > 1 or ex.day >= 1 else ex
         try:
             guess = dt.date(last.year, ex.month, min(ex.day, 28 if ex.month == 2 else ex.day))
         except ValueError:
@@ -906,6 +986,14 @@ def summarize_stock(uni: dict, ch: dict) -> dict:
     ib, ib_reasons = is_ikut_bandar(ind, series, i)
     if ib:
         sig["reasons"].extend(ib_reasons)
+    # Zona OB bull yang belum termitigasi di bawah harga → area masuk boleh turun ke atas zona OB
+    if sig["status"] == "BELI" and ctx.get("zone") and ctx["zone"].get("side") == "bull":
+        z = ctx["zone"]
+        ob_top = z.get("high")
+        atr_now = atr or ind["close"] * 0.03
+        if ob_top and sig["sl"] < ob_top < sig["entry_lo"] and ob_top >= ind["close"] - 1.0 * atr_now:
+            sig["entry_lo"] = round_tick(ob_top, up=True)
+            sig["zone_basis"] = "atas zona order block naik s/d tutup sinyal +0,25×ATR14"
     dates = [ymd(t) for t in ch["ts"]]
     meta = ch.get("meta") or {}
     price = ind["close"]
@@ -936,6 +1024,7 @@ def summarize_stock(uni: dict, ch: dict) -> dict:
         "code": uni["code"],
         "name": _best_name(uni, meta),
         "board": uni["board"],
+        "sector": uni.get("sector") or None,
         "listed": uni["listed"],
         "shares": uni["shares"],
         "yahoo_name": meta.get("shortName") or meta.get("longName"),
@@ -961,7 +1050,10 @@ def summarize_stock(uni: dict, ch: dict) -> dict:
         "gap_pct": None if ind["gap"] is None else round(ind["gap"] * 100, 2),
         "w52_high": meta.get("fiftyTwoWeekHigh"),
         "w52_low": meta.get("fiftyTwoWeekLow"),
-        "lot_cost": price * 100,
+        "lot": MKT["lot"],
+        "lot_cost": price * MKT["lot"],
+        "zone_basis": sig.get("zone_basis"),
+        "quote_time": meta.get("regularMarketTime"),
         "signal": sig["status"],
         "signal_kind": sig["kind"],
         "entry_lo": sig["entry_lo"],
@@ -988,7 +1080,7 @@ def summarize_stock(uni: dict, ch: dict) -> dict:
         "bars": len(ch["c"]),
         "first_date": ymd(ch["ts"][0]),
         "splits": ch.get("splits") or [],
-        "currency": (ch.get("meta") or {}).get("currency") or "IDR",
+        "currency": (ch.get("meta") or {}).get("currency") or MKT["currency"],
         "ikut_bandar": bool(ib),
         "ob_near": ("bull" if (ctx["inside_bull"] or ctx["near_bull"]) else ("bear" if (ctx["inside_bear"] or ctx["near_bear"]) else None)),
         "obs": slim_obs(_obs_in_window(all_obs, ch, i), i),
@@ -1014,16 +1106,19 @@ def is_liquid_row(row: dict) -> bool:
 def backtest_all(charts: dict[str, dict], uni_map: dict) -> dict:
     """Hitung statistik dari sejarah nyata. Return angka mentah + definisi aturan."""
     # collect daily IHSG not required
+    ML = MKT["min_label"]
     setups = {
-        "A_vol_spike": "Volume ≥ 1,8× rata-rata 20 hari, nilai transaksi 20 hari ≥ Rp2 miliar",
-        "B_breakout_vol": "Tutup ≥ highest 20 hari + volume ≥ 1,5× + nilai 20 hari ≥ Rp2 miliar",
-        "C_screener": "Sinyal 'potensi naik kuat' di app: volume ≥ 1,8× dan (breakout 20 hari atau tutup dekat high + naik ≥ 3%), likuid Rp2 miliar",
+        "A_vol_spike": f"Volume ≥ 1,8× rata-rata 20 hari, nilai transaksi 20 hari ≥ {ML}",
+        "B_breakout_vol": f"Tutup ≥ highest 20 hari + volume ≥ 1,5× + nilai 20 hari ≥ {ML}",
+        "C_screener": f"Sinyal 'potensi naik kuat' di app: volume ≥ 1,8× dan (breakout 20 hari atau tutup dekat high + naik ≥ 3%), likuid {ML}",
         "D_beli_aturan": "Sinyal BELI (breakout bervolume atau retest support di tren naik)",
-        "E_ikut_bandar": "Ikut Bandar (volume-based): likuid Rp2 miliar, volume ≥ 1,8×, harga naik, tutup dekat high, OBV atau A/D 5 hari naik, breakout highest 20 hari. Bukan broker summary/foreign flow.",
+        "E_ikut_bandar": f"Ikut Bandar (volume-based): likuid {ML}, volume ≥ 1,8×, harga naik, tutup dekat high, OBV atau A/D 5 hari naik, breakout highest 20 hari. Bukan broker summary/foreign flow.",
     }
     buckets = {k: {"rets": [], "rets5": [], "n_no_next": 0} for k in setups}
 
     trades = []  # for rule D hold to SL/TP1
+    zone_trades = []  # masuk hanya jika hari berikutnya harga menyentuh area masuk (tidak kejar)
+    zone_skipped = 0
     for code, ch in charts.items():
         c, h, l, o, v = ch["c"], ch["h"], ch["l"], ch["o"], ch["v"]
         series = precompute_series(ch)
@@ -1063,6 +1158,26 @@ def backtest_all(charts: dict[str, dict], uni_map: dict) -> dict:
                 if not entry:
                     continue
                 sl, tp1 = sig["sl"], sig["tp1"]
+                # varian zona: isi di min(open, entry_hi) kalau low hari berikutnya ≤ entry_hi
+                if l[i + 1] is not None and l[i + 1] <= sig["entry_hi"] and (o[i + 1] or 0) > sl:
+                    z_entry = min(o[i + 1] or sig["entry_hi"], sig["entry_hi"])
+                    z_exit = None
+                    for j in range(i + 1, min(n - 1, i + 20) + 1):
+                        if l[j] is not None and l[j] <= sl:
+                            z_exit = sl
+                            break
+                        if j > i + 1 and h[j] is not None and h[j] >= tp1:
+                            z_exit = tp1
+                            break
+                        if j == i + 1 and c[j] is not None and c[j] >= tp1 and z_entry < tp1:
+                            z_exit = tp1
+                            break
+                    if z_exit is None:
+                        z_exit = c[min(n - 1, i + 20)]
+                    if z_exit and z_entry:
+                        zone_trades.append(z_exit / z_entry - 1)
+                else:
+                    zone_skipped += 1
                 exit_px, exit_why, hold = None, None, None
                 last = min(n - 1, i + 20)
                 for j in range(i + 1, last + 1):
@@ -1143,6 +1258,15 @@ def backtest_all(charts: dict[str, dict], uni_map: dict) -> dict:
             }
         },
         "trade_beli": trade_pack,
+        "trade_beli_zona": {
+            "definisi": "Sinyal BELI, tapi hanya masuk kalau hari berikutnya harga turun/masih di area masuk (≤ batas atas zona). Isi di open atau batas atas zona, keluar di SL / TP1 / maks 20 hari (SL & TP hari sama = kalah).",
+            "n_trades": len(zone_trades),
+            "n_skip_lewat_zona": zone_skipped,
+            "win_rate": None if not zone_trades else round(100 * sum(1 for r in zone_trades if r > 0) / len(zone_trades), 2),
+            "median_pct": None if not zone_trades else round(100 * statistics.median(zone_trades), 2),
+            "avg_pct": None if not zone_trades else round(100 * statistics.mean(zone_trades), 2),
+        },
+        "market": MKT["id"],
         "min_value_likuid": MIN_VALUE_LIQUID,
         "catatan_ikut_bandar": "Sinyal 'Ikut Bandar' TIDAK memakai broker summary atau foreign flow (data itu tidak tersedia di sumber gratis app ini). Ini inferensi dari volume, nilai transaksi, OBV, Accumulation/Distribution, dan breakout harga. Bukan jejak sekuritas tertentu.",
     }
@@ -1321,14 +1445,137 @@ def summarize_ihsg(ch: dict) -> dict:
     }
 
 
-def main():
+def market_is_open(mkt: dict, now_utc: dt.datetime | None = None, grace_min: int = 20) -> bool:
+    """Perkiraan jam bursa (hari kerja, tanpa kalender libur). Grace setelah tutup
+    supaya harga penutupan ikut terambil."""
+    from zoneinfo import ZoneInfo
+    now_utc = now_utc or dt.datetime.now(dt.timezone.utc)
+    t = now_utc.astimezone(ZoneInfo(mkt["tz"]))
+    if t.weekday() >= 5:
+        return False
+    o = t.replace(hour=mkt["open"][0], minute=mkt["open"][1], second=0, microsecond=0)
+    c = t.replace(hour=mkt["close"][0], minute=mkt["close"][1], second=0, microsecond=0) + dt.timedelta(minutes=grace_min)
+    return o - dt.timedelta(minutes=5) <= t <= c
+
+
+def fetch_spark_batch(symbols: list[str]) -> list[dict]:
+    """Yahoo spark v7: maks 20 simbol per panggilan, tanpa kunci/crumb."""
+    url = (
+        "https://query1.finance.yahoo.com/v7/finance/spark?symbols="
+        + ",".join(symbols)
+        + "&range=1d&interval=1d"
+    )
+    payload = json.loads(fetch_bytes(url).decode("utf-8"))
+    out = []
+    for r in (payload.get("spark") or {}).get("result") or []:
+        resp = (r.get("response") or [{}])[0]
+        meta = resp.get("meta") or {}
+        if meta.get("regularMarketPrice") is None:
+            continue
+        out.append({"symbol": r.get("symbol"), "meta": meta})
+    return out
+
+
+def build_quotes(mid: str) -> dict:
+    """Mode ringan: harga terakhir + perubahan untuk semua ticker satu pasar."""
+    mkt = set_market(mid)
+    universe = load_universe()
+    sym2code = {yahoo_symbol(u["code"], mkt): u["code"] for u in universe}
+    idx_name, idx_sym = mkt["index"]
+    syms = [idx_sym] + list(sym2code)
+    batches = [syms[i : i + 20] for i in range(0, len(syms), 20)]
+    q: dict[str, list] = {}
+    index = None
+    errs = 0
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = [ex.submit(fetch_spark_batch, b) for b in batches]
+        for fut in as_completed(futs):
+            try:
+                rows = fut.result()
+            except Exception:
+                errs += 1
+                continue
+            for r in rows:
+                m = r["meta"]
+                price = float(m["regularMarketPrice"])
+                prev = m.get("chartPreviousClose") or m.get("previousClose")
+                chg = m.get("regularMarketChangePercent")
+                if chg is None and prev:
+                    chg = (price / float(prev) - 1) * 100
+                rec = [
+                    round(price, 4),
+                    None if chg is None else round(float(chg), 2),
+                    int(m.get("regularMarketTime") or 0),
+                    int(m.get("regularMarketVolume") or 0),
+                    m.get("regularMarketDayHigh"),
+                    m.get("regularMarketDayLow"),
+                    None if prev is None else round(float(prev), 4),
+                ]
+                if r["symbol"] == idx_sym:
+                    index = {"code": idx_name, "yahoo": idx_sym, "price": rec[0], "chg_pct": rec[1], "t": rec[2], "prev": rec[6]}
+                else:
+                    code = sym2code.get(r["symbol"])
+                    if code:
+                        q[code] = rec
+    times = [v[2] for v in q.values() if v[2]]
+    last_t = max(times) if times else None
+    return {
+        "market": mid,
+        "currency": mkt["currency"],
+        "tz": mkt["tz"],
+        "tz_label": mkt["tz_label"],
+        "source": "Yahoo Finance spark v7 (regularMarketPrice/Time)",
+        "source_delay_min": mkt["delay_min"],
+        "fetched_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "last_trade_epoch": last_t,
+        "open_now": market_is_open(mkt, grace_min=0),
+        "count": len(q),
+        "universe": len(universe),
+        "batch_errors": errs,
+        "fields": ["price", "chg_pct", "epoch", "volume", "high", "low", "prev_close"],
+        "index": index,
+        "q": q,
+    }
+
+
+def run_quotes(markets: list[str]) -> bool:
+    """Gabungkan ke data/quotes.json. Return True kalau ada harga yang berubah."""
+    path = DATA / "quotes.json"
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        old = {"markets": {}}
+    changed = False
+    for mid in markets:
+        t0 = time.time()
+        new = build_quotes(mid)
+        prev = (old.get("markets") or {}).get(mid)
+        if new["count"] < 0.5 * new["universe"]:
+            print(f"quotes {mid}: hanya {new['count']}/{new['universe']} — data lama dipertahankan", flush=True)
+            if prev is not None:
+                prev["last_error_utc"] = new["fetched_at_utc"]
+            continue
+        if not prev or prev.get("q") != new["q"] or (prev.get("index") or {}).get("price") != (new.get("index") or {}).get("price"):
+            changed = True
+        old.setdefault("markets", {})[mid] = new
+        print(f"quotes {mid}: {new['count']}/{new['universe']} ticker, {time.time()-t0:.1f}s, last trade epoch {new['last_trade_epoch']}", flush=True)
+    old["generated_at_utc"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    old["note"] = "Harga dari Yahoo Finance (gratis, bisa tertunda). Bukan saran beli/jual."
+    DATA.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(old, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    print("wrote", path, path.stat().st_size, "bytes; changed", changed)
+    return changed
+
+
+def run_full(mid: str, force: bool) -> None:
+    mkt = set_market(mid)
     DATA.mkdir(parents=True, exist_ok=True)
     CACHE.mkdir(parents=True, exist_ok=True)
-    force = "--force" in sys.argv
     universe = load_universe()
-    print(f"universe {len(universe)} emiten, mulai unduh Yahoo range={RANGE}", flush=True)
+    idx_name, idx_sym = mkt["index"]
+    print(f"[{mid}] universe {len(universe)} emiten, mulai unduh Yahoo range={RANGE}", flush=True)
 
-    jobs = [("IHSG", "^JKSE")] + [(u["code"], f"{u['code']}.JK") for u in universe]
+    jobs = [("__INDEX__", idx_sym)] + [(u["code"], yahoo_symbol(u["code"], mkt)) for u in universe]
     charts: dict[str, dict] = {}
     errors: list[dict] = []
     fetched = 0
@@ -1338,7 +1585,6 @@ def main():
         if not force:
             ch = load_cache(code)
             if ch and ch.get("c") and len(ch["c"]) >= 30:
-                # reuse if saved today
                 saved = ch.get("saved_at") or ""
                 if saved.startswith(now_wib().strftime("%Y-%m-%d")):
                     return code, ch, "cache"
@@ -1358,20 +1604,36 @@ def main():
                 else:
                     fetched += 1
             except Exception as e:
-                # try identify
                 errors.append({"error": str(e)})
-            if done % 50 == 0 or done == len(futs):
+            if done % 100 == 0 or done == len(futs):
                 print(f"  progress {done}/{len(futs)} ok={len(charts)} cache={cached_n} net={fetched} err={len(errors)}", flush=True)
 
-    # map leftover errors more cleanly: find missing
+    # Saat bursa masih buka, bar harian hari ini belum final → buang supaya sinyal
+    # hanya dari candle yang sudah tutup. Harga live tetap dari quotes.json.
+    if market_is_open(mkt, grace_min=0):
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(mkt["tz"])
+        today = dt.datetime.now(tz).date()
+        trimmed = 0
+        for k, ch in charts.items():
+            if ch.get("ts") and dt.datetime.fromtimestamp(ch["ts"][-1], tz).date() == today and len(ch["ts"]) > 30:
+                for key in ("ts", "o", "h", "l", "c", "v"):
+                    ch[key] = ch[key][:-1]
+                trimmed += 1
+        print(f"[{mid}] bursa masih buka — {trimmed} bar hari ini (belum final) dibuang", flush=True)
+
+    ok_eq = len([k for k in charts if k != "__INDEX__"])
+    if ok_eq < 0.5 * len(universe):
+        raise SystemExit(f"[{mid}] hanya {ok_eq}/{len(universe)} chart berhasil — file lama TIDAK ditimpa")
+
     missing = []
-    if "IHSG" not in charts:
-        missing.append({"code": "IHSG", "symbol": "^JKSE", "error": "gagal diambil"})
+    if "__INDEX__" not in charts:
+        missing.append({"code": idx_name, "symbol": idx_sym, "error": "gagal diambil"})
     for u in universe:
         if u["code"] not in charts:
-            missing.append({"code": u["code"], "symbol": f"{u['code']}.JK", "error": "gagal diambil / chart kosong"})
+            missing.append({"code": u["code"], "symbol": yahoo_symbol(u["code"], mkt), "error": "gagal diambil / chart kosong"})
 
-    print(f"hitung indikator & sinyal untuk {len(charts)} chart...", flush=True)
+    print(f"[{mid}] hitung indikator & sinyal untuk {len(charts)} chart...", flush=True)
     uni_map = {u["code"]: u for u in universe}
     stocks = []
     sum_err = []
@@ -1384,68 +1646,138 @@ def main():
         except Exception as e:
             sum_err.append({"code": u["code"], "error": str(e)})
 
-    ihsg = summarize_ihsg(charts["IHSG"]) if "IHSG" in charts else None
+    index = None
+    if "__INDEX__" in charts:
+        index = summarize_ihsg(charts["__INDEX__"])
+        index["code"] = idx_name
+        index["yahoo"] = idx_sym
 
-    print("backtest sejarah...", flush=True)
-    # only equity charts
-    eq_charts = {k: v for k, v in charts.items() if k != "IHSG"}
+    print(f"[{mid}] backtest sejarah...", flush=True)
+    t_bt = time.time()
+    eq_charts = {k: v for k, v in charts.items() if k != "__INDEX__"}
     bt = backtest_all(eq_charts, uni_map)
+    print(f"[{mid}] backtest {time.time()-t_bt:.1f}s", flush=True)
 
-    print("ambil berita RSS...", flush=True)
-    news = fetch_news(universe)
+    news = None
+    if mid == "id":
+        print("ambil berita RSS...", flush=True)
+        news = fetch_news(universe)
 
     fetched_at = now_wib()
+    limits = [
+        "API quote Yahoo (v7/v10) menolak tanpa crumb (HTTP 401), jadi PER/PBV/EPS live tidak tersedia di app ini.",
+        "Yahoo chart tidak mengirim Access-Control-Allow-Origin, jadi browser tidak bisa mengambil langsung — data diambil GitHub Actions/skrip ini.",
+        "Data bandarmologi (broker summary, foreign flow) tidak tersedia di sumber gratis yang dipakai. 'Ikut Bandar' murni dari volume/harga.",
+    ]
+    if mid == "id":
+        limits += [
+            "idx.co.id diblokir Cloudflare dari lingkungan pengambil data, jadwal resmi cum/recording/payment sering tidak ada; ex-date dari event Yahoo, cum-date ditandai perkiraan (hari bursa sebelumnya).",
+            "Volume Yahoo untuk saham .JK dalam satuan lembar. Nilai transaksi = harga × volume.",
+        ]
+    else:
+        limits.append("Dividen dari event Yahoo (ex-date). Tanggal bayar resmi tidak tersedia; pajak dividen luar negeri berbeda dari PPh 10% Indonesia.")
     market = {
+        "market": mid,
+        "market_label": mkt["label"],
+        "currency": mkt["currency"],
+        "lot": mkt["lot"],
+        "tz": mkt["tz"],
+        "tz_label": mkt["tz_label"],
+        "source_delay_min": mkt["delay_min"],
+        "min_value_likuid": mkt["min_value"],
+        "min_value_label": mkt["min_label"],
         "fetched_at_wib": iso(fetched_at),
         "fetched_at_jst": iso(fetched_at.astimezone(JST)),
-        "timezone_data": "Asia/Jakarta (WIB, UTC+7) — jam bursa",
+        "timezone_data": f"{mkt['tz']} ({mkt['tz_label']}) — jam bursa",
         "source": {
             "harga_dividen": "Yahoo Finance chart API (query1.finance.yahoo.com/v8/finance/chart)",
             "range": RANGE,
             "interval": INTERVAL,
-            "universe": "data/universe.csv (kode, nama, papan emiten BEI)",
-            "berita": [f["name"] + " — " + f["url"] for f in RSS_FEEDS],
-            "keterbatasan": [
-                "API quote Yahoo (v7/v10) menolak tanpa crumb (HTTP 401), jadi PER/PBV/EPS live tidak tersedia di app ini.",
-                "Yahoo chart tidak mengirim Access-Control-Allow-Origin, jadi browser tidak bisa mengambil langsung — data diload dari JSON hasil skrip ini.",
-                "idx.co.id diblokir Cloudflare dari lingkungan pengambil data, jadwal resmi cum/recording/payment sering tidak ada; ex-date dari event Yahoo, cum-date ditandai perkiraan (hari bursa sebelumnya).",
-                "Data bandarmologi (broker summary, foreign flow) tidak tersedia di sumber gratis yang dipakai. Materi Metode tetap menjelaskan caranya, tanpa angka palsu.",
-                "Volume Yahoo untuk saham .JK dalam satuan lembar. Nilai transaksi = harga × volume.",
-            ],
+            "universe": f"data/{mkt['universe']}",
+            "berita": [f["name"] + " — " + f["url"] for f in RSS_FEEDS] if mid == "id" else [],
+            "keterbatasan": limits,
         },
         "counts": {
             "universe": len(universe),
             "yahoo_ok": len(stocks),
-            "yahoo_fail": len(missing) - (0 if ihsg else 1) if True else len(missing),
-            "berita": news.get("count"),
+            "yahoo_fail": len([m for m in missing if m["code"] != idx_name]),
+            "berita": news.get("count") if news else None,
         },
-        "ihsg": ihsg,
+        "index": index,
+        "ihsg": index,
         "stocks": stocks,
         "missing": missing,
         "summarize_errors": sum_err,
         "fetch_exceptions": errors[:30],
     }
 
-    # slim write
-    (DATA / "market.json").write_text(json.dumps(market, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    (DATA / "backtest.json").write_text(json.dumps(bt, ensure_ascii=False, indent=2), encoding="utf-8")
-    (DATA / "news.json").write_text(json.dumps(news, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (DATA / mkt["market_file"]).write_text(json.dumps(market, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (DATA / mkt["backtest_file"]).write_text(json.dumps(bt, ensure_ascii=False, indent=2), encoding="utf-8")
+    if news is not None:
+        (DATA / "news.json").write_text(json.dumps(news, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
-    # human snapshot
     n_beli = sum(1 for s in stocks if s["signal"] == "BELI")
     n_jual = sum(1 for s in stocks if s["signal"] == "JUAL")
     n_scr = sum(1 for s in stocks if s["screener"])
     liq = sum(1 for s in stocks if is_liquid_row(s))
-    print("OK wrote data/market.json", (DATA / "market.json").stat().st_size, "bytes")
-    print("stocks", len(stocks), "liquid", liq, "screener", n_scr, "BELI", n_beli, "JUAL", n_jual, "missing", len(missing))
-    if ihsg:
-        print("IHSG", ihsg["date"], ihsg["price"], ihsg["chg_pct"])
-    print("backtest next_day C_screener", bt["next_day"]["C_screener"])
-    print("backtest next_day E_ikut_bandar", bt["next_day"]["E_ikut_bandar"])
-    print("backtest day5 E_ikut_bandar", bt["day5"]["E_ikut_bandar"])
-    print("backtest trade_beli", bt["trade_beli"])
-    print("ikut_bandar today", sum(1 for s in stocks if s.get("ikut_bandar")))
-    print("news", news["count"], "errors", news["errors"])
+    print(f"[{mid}] OK wrote", mkt["market_file"], (DATA / mkt["market_file"]).stat().st_size, "bytes")
+    print(f"[{mid}] stocks", len(stocks), "liquid", liq, "screener", n_scr, "BELI", n_beli, "JUAL", n_jual, "missing", len(missing))
+    if index:
+        print(f"[{mid}] index", index["code"], index["date"], index["price"], index["chg_pct"])
+    print(f"[{mid}] backtest next_day C_screener", bt["next_day"]["C_screener"])
+    print(f"[{mid}] backtest trade_beli", bt["trade_beli"])
+    print(f"[{mid}] backtest trade_beli_zona", bt["trade_beli_zona"])
+    if news:
+        print("news", news["count"], "errors", news["errors"])
+
+
+def main():
+    import argparse
+
+    global DATA
+    ap = argparse.ArgumentParser(description="Bangun data Investing (BEI / AS / Jepang) dari Yahoo")
+    ap.add_argument("--mode", choices=["full", "quotes"], default="full")
+    ap.add_argument("--market", default="id", help="id, us, jp, all, atau auto (quotes: pasar yang sedang buka)")
+    ap.add_argument("--out", default=None, help="folder output data (default ./data)")
+    ap.add_argument("--force", action="store_true", help="abaikan cache hari yang sama")
+    args = ap.parse_args()
+    if args.out:
+        DATA = Path(args.out).resolve()
+    DATA.mkdir(parents=True, exist_ok=True)
+
+    if args.market == "all":
+        markets = list(MARKETS)
+    elif args.market == "auto":
+        markets = [m for m in MARKETS if market_is_open(MARKETS[m])]
+    else:
+        markets = [m.strip() for m in args.market.split(",") if m.strip()]
+    for m in markets:
+        if m not in MARKETS:
+            raise SystemExit(f"pasar tidak dikenal: {m}")
+
+    changed = False
+    t0 = time.time()
+    if args.mode == "quotes":
+        if not markets:
+            print("tidak ada pasar yang buka sekarang — quotes dilewati")
+        else:
+            changed = run_quotes(markets)
+    else:
+        for m in markets:
+            t1 = time.time()
+            run_full(m, args.force)
+            print(f"[{m}] full selesai {time.time()-t1:.1f}s", flush=True)
+            changed = True
+        # sekalian segarkan quotes untuk pasar yang dibangun ulang
+        try:
+            run_quotes(markets)
+        except Exception as e:
+            print("quotes setelah full gagal:", e)
+    print(f"total {time.time()-t0:.1f}s")
+    gh = os.environ.get("GITHUB_OUTPUT")
+    if gh:
+        with open(gh, "a", encoding="utf-8") as f:
+            f.write(f"changed={'true' if changed else 'false'}\n")
 
 
 if __name__ == "__main__":

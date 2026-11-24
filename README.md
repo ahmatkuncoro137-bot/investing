@@ -1,6 +1,6 @@
 # Investing
 
-Aplikasi web (PWA) belajar dan pantau saham BEI. Bahasa Indonesia, mobile-first.
+Aplikasi web (PWA) belajar dan pantau saham BEI, AS, dan Jepang. Bahasa Indonesia, mobile-first.
 Bukan saran beli/jual. Tidak ada jaminan saham naik 10% dalam sehari.
 
 Nama di app, manifest, dan ikon: **Investing**. Ikon biru orisinal (huruf I + garis naik) — bukan salinan merek Investing.com.
@@ -14,28 +14,39 @@ Nama di app, manifest, dan ikon: **Investing**. Ikon biru orisinal (huruf I + ga
 - **Belajar / Metode** — materi + kuis, termasuk pelajaran order block.
 - **Berita** — RSS CNBC Market, Kontan Investasi, IDX Channel.
 
-## Data harga (jadwal harian)
+## Pasar
 
-Harga dan event dividen diambil dari Yahoo Finance chart API (ticker `.JK`). Browser tidak bisa memanggil Yahoo langsung (tidak ada CORS), jadi data diload dari JSON hasil skrip.
+Tombol di atas Beranda/Saham/Dividen: **Indonesia (BEI, 957 emiten)** · **Amerika (S&P 500 + Nasdaq-100, 518 saham)** · **Jepang (Nikkei 225, 225 saham)**. Sinyal BELI/TUNGGU/JUAL, penyaring, Ikut Bandar (volume), zona order block, dividen, dan backtest dihitung dengan aturan yang sama untuk tiap pasar (batas likuid: Rp2 miliar / US$20 juta / ¥1 miliar per hari, rata-rata 20 hari).
 
-Jalankan **setelah bursa tutup** (sesi reguler berakhir 15:00 WIB; data Yahoo biasanya sudah merampungkan penutupan sekitar **16:15–17:00 WIB**):
+## Update otomatis (GitHub Actions, gratis)
+
+`.github/workflows/update-data.yml` menjalankan `fetch_market.py`:
+
+| Jadwal (Senin–Jumat) | Mode | Isi |
+|---|---|---|
+| tiap 15 menit, 00:00–09:59 UTC (09:00–18:59 JST) | `quotes` | harga terakhir semua saham BEI & Jepang yang sedang buka (~2 detik) |
+| tiap 15 menit, 13:00–21:59 UTC (22:00–06:59 JST) | `quotes` | harga terakhir saham AS |
+| 15:50 JST · 16:35 WIB · 16:40 ET | `full` | rebuild penuh per pasar: sinyal, zona beli, OB, dividen, backtest, berita |
+
+Hasilnya di-*force-push* ke branch **`data`** (selalu 1 commit, jadi repo tidak membengkak). App membaca branch itu dari `api.github.com` (cache 60 detik) atau `raw.githubusercontent.com` (cache 5 menit); kalau belum ada, pakai snapshot `data/` di situs.
+
+Saat app terbuka: `quotes.json` dicek ulang tiap 3 menit; pasar AS & Jepang juga ambil harga langsung dari CNBC tiap 60 detik (CORS terbuka, tanpa kunci, tidak resmi — kalau gagal, otomatis kembali ke data Actions).
+
+**Keterlambatan jujur:** BEI via Yahoo tertunda ±10 menit + jadwal 15 menit (+ jadwal GitHub bisa telat 5–15 menit) → biasanya 15–35 menit. AS real-time saat app terbuka (CNBC/Nasdaq last sale). Jepang ±20 menit. Header app selalu menulis "Harga per HH:MM (tertunda ~X menit)".
+
+**Zona beli:** tiap sinyal BELI punya area masuk (tutup sinyal −0,5×ATR14 s/d +0,25×ATR14, atau mulai dari atas zona OB naik), SL, TP1/TP2. Kalau harga terbaru di atas batas atas → "Lewat zona — jangan kejar"; di bawah SL → "Batal".
+
+Manual:
 
 ```bash
-cd /workspace/saham_app   # atau folder deploy app ini
-python3 fetch_market.py --force
+python3 fetch_market.py --mode full --market all --force      # rebuild penuh 3 pasar (~1,5 menit)
+python3 fetch_market.py --mode quotes --market auto            # harga terbaru pasar yang buka
+python3 fetch_market.py --mode full --market us --out /tmp/x   # tulis ke folder lain
 ```
 
-Tanpa `--force`, cache hari yang sama dipakai ulang. File hasil: `data/market.json`, `data/backtest.json`, `data/news.json`.
+File: `data/market.json` (BEI), `market_us.json`, `market_jp.json`, `backtest*.json`, `news.json`, `quotes.json`. Daftar saham: `data/universe.csv`, `universe_us.csv` (Wikipedia S&P 500 + Nasdaq.com Nasdaq-100, Nov 2026), `universe_jp.csv` (indexes.nikkei.co.jp, Nov 2026) — perbarui berkala.
 
-Setelah file data baru diunggah ke hosting, app mengambil `/data/` secara network-first. Pembaruan *kode* PWA memakai cache `investing-v3`; kalau ada service worker baru, pengguna melihat toast **“Versi baru tersedia”** lalu bisa memuat ulang.
-
-Buka app (jangan `file://`):
-
-```bash
-python3 -m http.server 8765
-```
-
-http://127.0.0.1:8765/
+Buka app (jangan `file://`): `python3 -m http.server 8765` → http://127.0.0.1:8765/
 
 ## Auth Firebase (opsional)
 

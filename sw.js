@@ -1,4 +1,4 @@
-const CACHE = "investing-v3";
+const CACHE = "investing-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -30,7 +30,10 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  const isData = url.pathname.includes("/data/");
+  // Harga live (CNBC) & API GitHub: jangan disentuh SW, biar selalu segar.
+  if (url.hostname === "quote.cnbc.com" || url.hostname === "api.github.com") return;
+  const isData = url.pathname.includes("/data/") || url.hostname === "raw.githubusercontent.com";
+  if (url.origin !== location.origin && !isData) return;
   event.respondWith(
     (async () => {
       if (isData) {
